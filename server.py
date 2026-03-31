@@ -87,10 +87,12 @@ def main():
     print(f"  Proxy: ws://localhost:{WS_PORT}")
     print(f"  Press Ctrl+C to stop\n")
 
+    page = sys.argv[1] if len(sys.argv) > 1 else "english_channel_ais.html"
+
     threading.Thread(target=http_server, daemon=True).start()
 
     import time; time.sleep(0.4)
-    webbrowser.open(f"http://localhost:{HTTP_PORT}/english_channel_ais.html")
+    webbrowser.open(f"http://localhost:{HTTP_PORT}/{page}")
     print(f"  Browser opened. Waiting for connections...\n")
 
     try:
