@@ -1,0 +1,856 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>English Channel – AIS Tracker + Playback</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css" />
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: 'SF Mono', 'Consolas', 'Menlo', monospace; background: #0a0e14; color: #c4cad4; }
+  #map { width: 100%; height: calc(100vh - 56px); }
+
+  @keyframes dotpulse {
+    0%, 100% { opacity: 1; transform: scale(1); }
+    50% { opacity: 0.4; transform: scale(0.7); }
+  }
+  .vessel-dot { border-radius: 50%; animation: dotpulse 1.8s ease-in-out infinite; box-shadow: 0 0 6px currentColor; }
+  .vessel-dot-static { border-radius: 50%; opacity: 0.7; }
+
+  .control-panel {
+    position: absolute; top: 12px; right: 12px; z-index: 1000;
+    background: rgba(10, 14, 20, 0.92); border: 1px solid #1e2a3a;
+    border-radius: 8px; padding: 14px; width: 300px; backdrop-filter: blur(10px);
+  }
+  .control-panel h2 { font-size: 13px; font-weight: 600; color: #7eb8da; margin-bottom: 10px; letter-spacing: 0.5px; }
+  .control-panel label { font-size: 11px; color: #6b7785; display: block; margin-bottom: 3px; }
+  .control-panel input[type="text"] {
+    width: 100%; padding: 6px 8px; background: #121820; border: 1px solid #1e2a3a;
+    border-radius: 4px; color: #c4cad4; font-family: inherit; font-size: 11px;
+    margin-bottom: 8px; outline: none;
+  }
+  .control-panel input[type="text"]:focus { border-color: #3a7ca5; }
+  .btn {
+    padding: 6px 12px; border: none; border-radius: 4px; cursor: pointer;
+    font-family: inherit; font-size: 10px; font-weight: 600;
+    letter-spacing: 0.3px; transition: all 0.15s;
+  }
+  .btn-connect { background: #1a6b3c; color: #a5e6be; }
+  .btn-connect:hover { background: #1f7d46; }
+  .btn-disconnect { background: #6b1a1a; color: #e6a5a5; }
+  .btn-disconnect:hover { background: #7d1f1f; }
+  .btn-sm {
+    padding: 4px 8px; font-size: 9px; background: #121820; color: #6b7785;
+    border: 1px solid #1e2a3a; border-radius: 3px; cursor: pointer;
+    font-family: inherit; font-weight: 600; transition: all 0.15s;
+  }
+  .btn-sm:hover { border-color: #3a7ca5; color: #7eb8da; }
+  .btn-sm.danger:hover { border-color: #e05555; color: #e05555; }
+  .btn:disabled, .btn-sm:disabled { opacity: 0.4; cursor: not-allowed; }
+
+  .stats {
+    margin-top: 10px; padding-top: 10px; border-top: 1px solid #1e2a3a;
+    font-size: 10px; line-height: 1.8;
+  }
+  .stats .val { color: #7eb8da; font-weight: 600; }
+  .status-dot {
+    display: inline-block; width: 7px; height: 7px; border-radius: 50%;
+    margin-right: 5px; vertical-align: middle;
+  }
+  .status-dot.off { background: #4a3030; }
+  .status-dot.connecting { background: #a08030; animation: dotpulse 1s infinite; }
+  .status-dot.on { background: #30a050; }
+
+  .data-controls {
+    margin-top: 8px; padding-top: 8px; border-top: 1px solid #1e2a3a;
+    display: flex; gap: 4px; flex-wrap: wrap;
+  }
+
+  .legend {
+    margin-top: 8px; padding-top: 8px; border-top: 1px solid #1e2a3a;
+    font-size: 9px; display: grid; grid-template-columns: 1fr 1fr; gap: 2px 6px;
+  }
+  .legend-item { display: flex; align-items: center; gap: 4px; }
+  .legend-swatch { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+
+  .playback-bar {
+    position: fixed; bottom: 0; left: 0; right: 0; height: 56px; z-index: 1000;
+    background: rgba(10, 14, 20, 0.95); border-top: 1px solid #1e2a3a;
+    display: flex; align-items: center; padding: 0 16px; gap: 12px;
+    backdrop-filter: blur(10px);
+  }
+  .pb-btn {
+    width: 32px; height: 32px; border: 1px solid #2a3a4a; border-radius: 6px;
+    background: #121820; color: #7eb8da; cursor: pointer;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 14px; transition: all 0.15s;
+  }
+  .pb-btn:hover { background: #1a2530; border-color: #3a7ca5; }
+  .pb-time { font-size: 12px; font-weight: 600; color: #7eb8da; min-width: 140px; text-align: center; }
+  .pb-mode { font-size: 9px; color: #6b7785; text-transform: uppercase; letter-spacing: 1px; }
+  .pb-mode.live { color: #50b86c; }
+  .pb-slider-wrap { flex: 1; display: flex; flex-direction: column; gap: 2px; }
+  .pb-slider {
+    -webkit-appearance: none; appearance: none;
+    width: 100%; height: 6px; border-radius: 3px;
+    background: #1e2a3a; outline: none; cursor: pointer;
+  }
+  .pb-slider::-webkit-slider-thumb {
+    -webkit-appearance: none; width: 14px; height: 14px; border-radius: 50%;
+    background: #7eb8da; cursor: pointer; border: 2px solid #0a0e14;
+  }
+  .pb-slider::-moz-range-thumb {
+    width: 14px; height: 14px; border-radius: 50%;
+    background: #7eb8da; cursor: pointer; border: 2px solid #0a0e14;
+  }
+  .pb-ticks { display: flex; justify-content: space-between; padding: 0 7px; }
+  .pb-tick { font-size: 8px; color: #3a4550; }
+  .pb-speed {
+    font-size: 10px; color: #6b7785; cursor: pointer; user-select: none;
+    padding: 4px 8px; border: 1px solid #1e2a3a; border-radius: 4px; background: #121820;
+  }
+  .pb-speed:hover { border-color: #3a7ca5; color: #7eb8da; }
+  .pb-snapshots { font-size: 9px; color: #4a5560; }
+
+  .log-panel {
+    position: absolute; bottom: 68px; left: 12px; z-index: 1000;
+    background: rgba(10, 14, 20, 0.92); border: 1px solid #1e2a3a;
+    border-radius: 8px; padding: 10px; width: 400px; max-height: 160px;
+    backdrop-filter: blur(10px); overflow: hidden;
+  }
+  .log-panel h3 { font-size: 10px; color: #6b7785; margin-bottom: 4px; }
+  #log { font-size: 9px; line-height: 1.5; max-height: 130px; overflow-y: auto; color: #5a6570; }
+  #log .entry { border-bottom: 1px solid #141a22; padding: 1px 0; }
+  #log .ship-name { color: #7eb8da; }
+  #log .sys { color: #a08030; }
+  #log .err { color: #e05555; }
+  #log .time { color: #3a4550; }
+  #log .rec { color: #50b86c; }
+  #log .db { color: #5090d0; }
+
+  .leaflet-popup-content-wrapper {
+    background: rgba(10, 14, 20, 0.95) !important; border: 1px solid #1e2a3a !important;
+    border-radius: 6px !important; color: #c4cad4 !important;
+    font-family: 'SF Mono', 'Consolas', monospace !important;
+  }
+  .leaflet-popup-tip { background: rgba(10, 14, 20, 0.95) !important; }
+  .leaflet-popup-content { font-size: 11px !important; line-height: 1.7 !important; margin: 10px 14px !important; }
+  .popup-name { font-size: 13px; font-weight: 600; color: #7eb8da; }
+  .popup-label { color: #6b7785; }
+  .popup-val { color: #c4cad4; }
+  .leaflet-container { background: #0d1117 !important; }
+
+  /* Hidden file input for import */
+  #importInput { display: none; }
+</style>
+</head>
+<body>
+
+<div id="map"></div>
+<input type="file" id="importInput" accept=".json" onchange="importFile(this)" />
+
+<div class="control-panel">
+  <h2>ENGLISH CHANNEL AIS</h2>
+  <label>API Key</label>
+  <input type="text" id="apiKey" placeholder="aisstream.io API key" />
+  <div style="display:flex; gap:8px; align-items:center;">
+    <button class="btn btn-connect" id="connectBtn" onclick="toggleConnection()">Connect</button>
+    <span style="font-size:10px;">
+      <span class="status-dot off" id="statusDot"></span>
+      <span id="statusText">Disconnected</span>
+    </span>
+  </div>
+  <div class="stats">
+    <div>Vessels: <span class="val" id="vesselCount">0</span></div>
+    <div>Msg/sec: <span class="val" id="msgRate">0</span></div>
+    <div>Snapshots: <span class="val" id="snapshotCount">0</span></div>
+    <div>Recording: <span class="val" id="recordingTime">–</span></div>
+    <div>Stored: <span class="val" id="dbSize">loading...</span></div>
+  </div>
+  <div class="data-controls">
+    <button class="btn-sm" onclick="exportData()" title="Download all snapshots as JSON">⬇ Export</button>
+    <button class="btn-sm" onclick="document.getElementById('importInput').click()" title="Load snapshots from JSON file">⬆ Import</button>
+    <button class="btn-sm danger" onclick="clearData()" title="Delete all stored snapshots">⊘ Clear</button>
+  </div>
+  <div class="legend">
+    <div class="legend-item"><div class="legend-swatch" style="background:#e05555;"></div>Tanker</div>
+    <div class="legend-item"><div class="legend-swatch" style="background:#50b86c;"></div>Cargo</div>
+    <div class="legend-item"><div class="legend-swatch" style="background:#5090d0;"></div>Passenger</div>
+    <div class="legend-item"><div class="legend-swatch" style="background:#d0a030;"></div>Fishing</div>
+    <div class="legend-item"><div class="legend-swatch" style="background:#a855c0;"></div>Tug/Pilot</div>
+    <div class="legend-item"><div class="legend-swatch" style="background:#c07840;"></div>HSC</div>
+    <div class="legend-item"><div class="legend-swatch" style="background:#40b0b0;"></div>Sailing</div>
+    <div class="legend-item"><div class="legend-swatch" style="background:#808080;"></div>Other</div>
+  </div>
+</div>
+
+<div class="log-panel">
+  <h3>FEED</h3>
+  <div id="log"></div>
+</div>
+
+<div class="playback-bar">
+  <button class="pb-btn" id="pbPrev" onclick="stepBack()" title="Previous snapshot">⏮</button>
+  <button class="pb-btn" id="pbPlay" onclick="togglePlayback()" title="Play / Pause">▶</button>
+  <button class="pb-btn" id="pbNext" onclick="stepForward()" title="Next snapshot">⏭</button>
+  <button class="pb-btn" id="pbLive" onclick="goLive()" title="Go to live">⏺</button>
+  <div class="pb-slider-wrap">
+    <input type="range" class="pb-slider" id="pbSlider" min="0" max="0" value="0" oninput="scrubTo(this.value)" />
+    <div class="pb-ticks" id="pbTicks"></div>
+  </div>
+  <div style="text-align:center; min-width: 130px;">
+    <div class="pb-time" id="pbTime">LIVE</div>
+    <div class="pb-mode live" id="pbMode">● LIVE</div>
+  </div>
+  <div class="pb-speed" id="pbSpeed" onclick="cycleSpeed()" title="Playback speed">1×</div>
+  <div class="pb-snapshots" id="pbInfo">0 snapshots</div>
+</div>
+
+<script>
+// ═══════════════════════════════════════
+//  CONFIG
+// ═══════════════════════════════════════
+const BBOX_SW = [48.3, -6.0], BBOX_NE = [51.5, 2.5];
+const SNAPSHOT_INTERVAL = 10 * 60 * 1000;
+const TRAIL_WEIGHT = 4, TRAIL_OPACITY = 0.6;
+const DOT_SIZE_MOVING = 10, DOT_SIZE_STATIC = 7;
+const DB_NAME = 'ais_tracker';
+const DB_STORE = 'snapshots';
+const DB_VERSION = 1;
+
+// ═══════════════════════════════════════
+//  INDEXEDDB — persistent snapshot store
+// ═══════════════════════════════════════
+let db = null;
+
+function openDB() {
+  return new Promise((resolve, reject) => {
+    const req = indexedDB.open(DB_NAME, DB_VERSION);
+    req.onupgradeneeded = (e) => {
+      const d = e.target.result;
+      if (!d.objectStoreNames.contains(DB_STORE)) {
+        d.createObjectStore(DB_STORE, { keyPath: 'id', autoIncrement: true });
+      }
+    };
+    req.onsuccess = (e) => { db = e.target.result; resolve(db); };
+    req.onerror = (e) => { logErr('IndexedDB error: ' + e.target.error); reject(e.target.error); };
+  });
+}
+
+function dbSaveSnapshot(snap) {
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(DB_STORE, 'readwrite');
+    const store = tx.objectStore(DB_STORE);
+    // Store time as ISO string for JSON portability
+    const record = { time: snap.time.toISOString(), vessels: snap.vessels };
+    const req = store.add(record);
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = (e) => reject(e.target.error);
+  });
+}
+
+function dbLoadAll() {
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(DB_STORE, 'readonly');
+    const store = tx.objectStore(DB_STORE);
+    const req = store.getAll();
+    req.onsuccess = () => {
+      const records = req.result.map(r => ({
+        id: r.id,
+        time: new Date(r.time),
+        vessels: r.vessels
+      }));
+      // Sort by time
+      records.sort((a, b) => a.time - b.time);
+      resolve(records);
+    };
+    req.onerror = (e) => reject(e.target.error);
+  });
+}
+
+function dbClear() {
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(DB_STORE, 'readwrite');
+    const store = tx.objectStore(DB_STORE);
+    const req = store.clear();
+    req.onsuccess = () => resolve();
+    req.onerror = (e) => reject(e.target.error);
+  });
+}
+
+function dbCount() {
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(DB_STORE, 'readonly');
+    const store = tx.objectStore(DB_STORE);
+    const req = store.count();
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = (e) => reject(e.target.error);
+  });
+}
+
+async function updateDbInfo() {
+  try {
+    const count = await dbCount();
+    document.getElementById('dbSize').textContent = `${count} snapshots in DB`;
+  } catch (e) {
+    document.getElementById('dbSize').textContent = 'DB error';
+  }
+}
+
+// ═══════════════════════════════════════
+//  EXPORT / IMPORT
+// ═══════════════════════════════════════
+async function exportData() {
+  if (snapshots.length === 0) { logSys('No snapshots to export'); return; }
+
+  const exportObj = {
+    version: 1,
+    exported: new Date().toISOString(),
+    area: 'English Channel',
+    bbox: { sw: BBOX_SW, ne: BBOX_NE },
+    snapshotInterval: SNAPSHOT_INTERVAL / 1000,
+    snapshots: snapshots.map(s => ({
+      time: s.time.toISOString(),
+      vessels: s.vessels
+    }))
+  };
+
+  const json = JSON.stringify(exportObj);
+  const blob = new Blob([json], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+
+  const a = document.createElement('a');
+  const dateStr = new Date().toISOString().slice(0, 16).replace(/[T:]/g, '-');
+  a.href = url;
+  a.download = `ais-recording-${dateStr}.json`;
+  a.click();
+  URL.revokeObjectURL(url);
+
+  logDb(`Exported ${snapshots.length} snapshots (${(json.length / 1024 / 1024).toFixed(1)} MB)`);
+}
+
+async function importFile(input) {
+  const file = input.files[0];
+  if (!file) return;
+
+  logDb('Loading ' + file.name + '...');
+
+  try {
+    const text = await file.text();
+    const data = JSON.parse(text);
+
+    if (!data.snapshots || !Array.isArray(data.snapshots)) {
+      logErr('Invalid file format — no snapshots array found');
+      return;
+    }
+
+    // If in playback, exit first
+    if (playbackMode) exitPlayback();
+
+    const imported = data.snapshots.map(s => ({
+      time: new Date(s.time),
+      vessels: s.vessels
+    }));
+
+    // Merge with existing: add imported, sort by time, deduplicate by timestamp
+    const combined = [...snapshots, ...imported];
+    combined.sort((a, b) => a.time - b.time);
+
+    // Deduplicate (same timestamp within 1 second)
+    const deduped = [];
+    for (const s of combined) {
+      if (deduped.length === 0 || Math.abs(s.time - deduped[deduped.length - 1].time) > 1000) {
+        deduped.push(s);
+      }
+    }
+
+    // Clear DB and re-save all
+    await dbClear();
+    for (const s of deduped) {
+      await dbSaveSnapshot(s);
+    }
+
+    // Replace in-memory snapshots
+    snapshots.length = 0;
+    snapshots.push(...deduped);
+
+    updateSlider();
+    updateDbInfo();
+
+    logDb(`Imported ${imported.length} snapshots from ${file.name}. Total: ${snapshots.length}`);
+    if (data.area) logDb(`Recording area: ${data.area}`);
+    if (imported.length > 0) {
+      const first = imported[0].time.toLocaleString();
+      const last = imported[imported.length - 1].time.toLocaleString();
+      logDb(`Time range: ${first} → ${last}`);
+    }
+  } catch (e) {
+    logErr('Import failed: ' + e.message);
+  }
+
+  // Reset file input so the same file can be re-imported
+  input.value = '';
+}
+
+async function clearData() {
+  if (!confirm('Delete all stored snapshots? This cannot be undone.')) return;
+
+  if (playbackMode) exitPlayback();
+
+  try {
+    await dbClear();
+    snapshots.length = 0;
+    updateSlider();
+    updateDbInfo();
+    logDb('All snapshots cleared');
+  } catch (e) {
+    logErr('Clear failed: ' + e.message);
+  }
+}
+
+// ═══════════════════════════════════════
+//  MAP
+// ═══════════════════════════════════════
+const map = L.map('map', { center: [50.0, -1.8], zoom: 7, zoomControl: false, preferCanvas: true });
+L.control.zoom({ position: 'bottomright' }).addTo(map);
+L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
+  attribution: '&copy; CARTO &copy; OSM', subdomains: 'abcd', maxZoom: 18
+}).addTo(map);
+L.rectangle([BBOX_SW, BBOX_NE], { color: '#3a7ca5', weight: 1, fillOpacity: 0.03, dashArray: '6,4' }).addTo(map);
+
+// ═══════════════════════════════════════
+//  STATE
+// ═══════════════════════════════════════
+const liveVessels = new Map();
+let ws = null, connected = false, manualDisconnect = false;
+let msgCount = 0, msgWindow = [], reconnectTimer = null;
+const snapshots = [];
+let lastSnapshotTime = 0, recordingStarted = null;
+let playbackMode = false, playbackIndex = 0, playbackPlaying = false;
+let playbackTimer = null, playbackSpeed = 1;
+const SPEEDS = [1, 2, 5, 10]; let speedIndex = 0;
+const playbackMarkers = new Map();
+
+// ═══════════════════════════════════════
+//  LOGGING
+// ═══════════════════════════════════════
+function logSys(t) { _log(`<span class="sys">● ${t}</span>`); }
+function logErr(t) { _log(`<span class="err">✖ ${t}</span>`); }
+function logRec(t) { _log(`<span class="rec">◉ ${t}</span>`); }
+function logDb(t) { _log(`<span class="db">⬡ ${t}</span>`); }
+function logShip(name, sog, cog, tag) { _log(`<span class="ship-name">${name}</span> [${tag}] ${sog?.toFixed(1)??'–'} kn`); }
+function _log(html) {
+  const el = document.getElementById('log');
+  const t = new Date().toLocaleTimeString();
+  const div = document.createElement('div');
+  div.className = 'entry';
+  div.innerHTML = `<span class="time">${t}</span> ${html}`;
+  el.prepend(div);
+  while (el.children.length > 60) el.removeChild(el.lastChild);
+}
+
+// ═══════════════════════════════════════
+//  SHIP TYPE HELPERS
+// ═══════════════════════════════════════
+function shipColor(type) {
+  if (type >= 80 && type <= 89) return '#e05555';
+  if (type >= 70 && type <= 79) return '#50b86c';
+  if (type >= 60 && type <= 69) return '#5090d0';
+  if (type === 30) return '#d0a030';
+  if ([31,32,50,52,53,55].includes(type)) return '#a855c0';
+  if (type >= 40 && type <= 49) return '#c07840';
+  if (type === 36 || type === 37) return '#40b0b0';
+  return '#808080';
+}
+function shipTypeName(type) {
+  if (type >= 80 && type <= 89) return 'Tanker';
+  if (type >= 70 && type <= 79) return 'Cargo';
+  if (type >= 60 && type <= 69) return 'Passenger';
+  if (type === 30) return 'Fishing';
+  if ([31,32].includes(type)) return 'Towing';
+  if ([50,55].includes(type)) return 'Pilot';
+  if ([52,53].includes(type)) return 'Tug';
+  if (type >= 40 && type <= 49) return 'HSC';
+  if (type === 36) return 'Sailing';
+  if (type === 37) return 'Pleasure';
+  return type ? 'Type ' + type : 'Unknown';
+}
+function navStatName(s) {
+  return ['Under way','Anchored','Not under cmd','Restricted','Constrained','Moored',
+    'Aground','Fishing','Sailing','','','Towing','Pushing','','SART',''][s] || '?';
+}
+
+// ═══════════════════════════════════════
+//  DOT ICON
+// ═══════════════════════════════════════
+function makeDot(color, sog, animate) {
+  const sz = sog > 0.5 ? DOT_SIZE_MOVING : DOT_SIZE_STATIC;
+  const cls = animate ? 'vessel-dot' : 'vessel-dot-static';
+  return L.divIcon({
+    html: `<div class="${cls}" style="width:${sz}px;height:${sz}px;background:${color};color:${color};"></div>`,
+    iconSize: [sz, sz], iconAnchor: [sz/2, sz/2], className: ''
+  });
+}
+
+// ═══════════════════════════════════════
+//  LIVE MESSAGE HANDLING
+// ═══════════════════════════════════════
+function handleMessage(msg) {
+  const meta = msg.MetaData;
+  if (!meta) return;
+  const mmsi = meta.MMSI, lat = meta.latitude, lon = meta.longitude;
+  const name = (meta.ShipName || '').trim();
+  if (!lat || !lon || (lat === 0 && lon === 0)) return;
+
+  let hdg = 511, cog = 0, sog = 0, nav = 15, type = 0, dest = '', eta = '', draft = 0;
+  const mt = msg.MessageType, P = msg.Message;
+  if (mt === 'PositionReport' && P?.PositionReport) {
+    const r = P.PositionReport;
+    hdg = r.TrueHeading ?? 511; cog = r.Cog ?? 0; sog = r.Sog ?? 0; nav = r.NavigationalStatus ?? 15;
+  } else if (mt === 'ShipStaticData' && P?.ShipStaticData) {
+    const s = P.ShipStaticData;
+    type = s.Type ?? 0; dest = s.Destination ?? '';
+    eta = s.Eta ? `${s.Eta.Month}-${s.Eta.Day} ${s.Eta.Hour}:${String(s.Eta.Minute||0).padStart(2,'0')}` : '';
+    draft = (s.MaximumStaticDraught ?? 0) / 10;
+  } else if (mt === 'StandardClassBPositionReport' && P?.StandardClassBPositionReport) {
+    const r = P.StandardClassBPositionReport;
+    hdg = r.TrueHeading ?? 511; cog = r.Cog ?? 0; sog = r.Sog ?? 0;
+  } else if (mt === 'ExtendedClassBPositionReport' && P?.ExtendedClassBPositionReport) {
+    const r = P.ExtendedClassBPositionReport;
+    hdg = r.TrueHeading ?? 511; cog = r.Cog ?? 0; sog = r.Sog ?? 0; type = r.ShipType ?? 0;
+  }
+  msgCount++; msgWindow.push(Date.now());
+
+  const ex = liveVessels.get(mmsi);
+  if (ex) {
+    const d = ex.data;
+    if (hdg !== 511) d.hdg = hdg; if (cog) d.cog = cog; d.sog = sog;
+    if (nav !== 15) d.nav = nav; if (type) d.type = type;
+    if (dest) d.dest = dest; if (eta) d.eta = eta; if (draft) d.draft = draft;
+    if (name) d.name = name; d.lat = lat; d.lon = lon;
+    ex.lastSeen = Date.now();
+    if (!playbackMode) {
+      const color = shipColor(d.type);
+      ex.marker.setLatLng([lat, lon]);
+      ex.marker.setIcon(makeDot(color, d.sog, true));
+      ex.trail.push([lat, lon]); if (ex.trail.length > 60) ex.trail.shift();
+      if (ex.polyline) { ex.polyline.setLatLngs(ex.trail); ex.polyline.setStyle({ color }); }
+    }
+  } else {
+    const data = { mmsi, name, lat, lon, hdg, cog, sog, nav, type, dest, eta, draft };
+    let marker = null, polyline = null;
+    if (!playbackMode) {
+      const color = shipColor(type);
+      marker = L.marker([lat, lon], { icon: makeDot(color, sog, true) }).addTo(map);
+      bindPopup(marker, mmsi);
+      polyline = L.polyline([[lat, lon]], { color, weight: TRAIL_WEIGHT, opacity: TRAIL_OPACITY }).addTo(map);
+    }
+    liveVessels.set(mmsi, { data, marker, trail: [[lat, lon]], polyline, lastSeen: Date.now() });
+    logShip(name || mmsi, sog, cog, mt === 'ShipStaticData' ? 'STATIC' : 'POS');
+  }
+  if (!playbackMode) updateLiveStats();
+
+  const now = Date.now();
+  if (!recordingStarted) recordingStarted = now;
+  if (now - lastSnapshotTime >= SNAPSHOT_INTERVAL) { takeSnapshot(); lastSnapshotTime = now; }
+}
+
+function bindPopup(marker, mmsi) {
+  marker.on('click', () => {
+    const d = liveVessels.get(mmsi)?.data; if (!d) return;
+    marker.unbindPopup();
+    marker.bindPopup(`
+      <div class="popup-name">${d.name || 'UNKNOWN'}</div>
+      <div><span class="popup-label">MMSI:</span> <span class="popup-val">${d.mmsi}</span></div>
+      <div><span class="popup-label">Type:</span> <span class="popup-val">${shipTypeName(d.type)}</span></div>
+      <div><span class="popup-label">Status:</span> <span class="popup-val">${navStatName(d.nav)}</span></div>
+      <div><span class="popup-label">SOG:</span> <span class="popup-val">${d.sog.toFixed(1)} kn</span></div>
+      <div><span class="popup-label">COG:</span> <span class="popup-val">${d.cog.toFixed(1)}°</span></div>
+      ${d.dest ? `<div><span class="popup-label">Dest:</span> <span class="popup-val">${d.dest}</span></div>` : ''}
+      <div><span class="popup-label">Pos:</span> <span class="popup-val">${d.lat.toFixed(5)}, ${d.lon.toFixed(5)}</span></div>
+    `, { maxWidth: 260 }).openPopup();
+  });
+}
+
+function updateLiveStats() {
+  document.getElementById('vesselCount').textContent = liveVessels.size;
+  document.getElementById('snapshotCount').textContent = snapshots.length;
+  if (recordingStarted) {
+    const mins = Math.floor((Date.now() - recordingStarted) / 60000);
+    const hrs = Math.floor(mins / 60);
+    document.getElementById('recordingTime').textContent = hrs > 0 ? `${hrs}h ${mins%60}m` : `${mins}m`;
+  }
+}
+
+// ═══════════════════════════════════════
+//  SNAPSHOTS
+// ═══════════════════════════════════════
+async function takeSnapshot() {
+  const vesselData = {};
+  let count = 0;
+  for (const [mmsi, v] of liveVessels) {
+    const d = v.data;
+    vesselData[mmsi] = { lat: d.lat, lon: d.lon, sog: d.sog, cog: d.cog, hdg: d.hdg, name: d.name, type: d.type, nav: d.nav };
+    count++;
+  }
+  if (count === 0) return;
+  const snap = { time: new Date(), vessels: vesselData };
+  snapshots.push(snap);
+
+  // Persist to IndexedDB
+  try { await dbSaveSnapshot(snap); } catch (e) { logErr('DB save failed: ' + e.message); }
+
+  updateSlider();
+  updateDbInfo();
+  logRec(`Snapshot #${snapshots.length} — ${count} vessels`);
+}
+
+// First snapshot after 30s
+setTimeout(() => {
+  if (liveVessels.size > 0 && snapshots.length === 0) {
+    takeSnapshot(); lastSnapshotTime = Date.now();
+  }
+}, 30000);
+
+function updateSlider() {
+  const slider = document.getElementById('pbSlider');
+  slider.max = Math.max(0, snapshots.length - 1);
+  if (!playbackMode) slider.value = snapshots.length - 1;
+  updateTicks();
+  document.getElementById('pbInfo').textContent = `${snapshots.length} snapshots`;
+  document.getElementById('snapshotCount').textContent = snapshots.length;
+}
+
+function updateTicks() {
+  const c = document.getElementById('pbTicks'); c.innerHTML = '';
+  if (snapshots.length < 2) return;
+  const max = Math.min(8, snapshots.length);
+  const step = Math.max(1, Math.floor((snapshots.length - 1) / (max - 1)));
+  for (let i = 0; i < snapshots.length; i += step) {
+    const t = snapshots[i].time;
+    const tk = document.createElement('span'); tk.className = 'pb-tick';
+    // Show date if spans multiple days
+    const now = new Date();
+    if (t.toDateString() !== now.toDateString()) {
+      tk.textContent = t.toLocaleDateString([], {month:'short',day:'numeric'}) + ' ' +
+                       t.toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'});
+    } else {
+      tk.textContent = t.toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'});
+    }
+    c.appendChild(tk);
+  }
+}
+
+// ═══════════════════════════════════════
+//  PLAYBACK
+// ═══════════════════════════════════════
+function enterPlayback(index) {
+  if (snapshots.length === 0) return;
+  playbackMode = true;
+  playbackIndex = Math.max(0, Math.min(index, snapshots.length - 1));
+  for (const [, v] of liveVessels) {
+    if (v.marker) map.removeLayer(v.marker);
+    if (v.polyline) map.removeLayer(v.polyline);
+  }
+  document.getElementById('pbMode').textContent = '⏸ PLAYBACK';
+  document.getElementById('pbMode').className = 'pb-mode';
+  renderSnapshot(playbackIndex);
+}
+
+function exitPlayback() {
+  playbackMode = false; playbackPlaying = false;
+  if (playbackTimer) { clearInterval(playbackTimer); playbackTimer = null; }
+  clearPlaybackMarkers();
+  for (const [mmsi, v] of liveVessels) {
+    const d = v.data; const color = shipColor(d.type);
+    if (!v.marker) {
+      v.marker = L.marker([d.lat, d.lon], { icon: makeDot(color, d.sog, true) }).addTo(map);
+      bindPopup(v.marker, mmsi);
+    } else { v.marker.addTo(map); v.marker.setLatLng([d.lat, d.lon]); v.marker.setIcon(makeDot(color, d.sog, true)); }
+    if (!v.polyline) {
+      v.polyline = L.polyline(v.trail, { color, weight: TRAIL_WEIGHT, opacity: TRAIL_OPACITY }).addTo(map);
+    } else { v.polyline.addTo(map); v.polyline.setStyle({ color }); }
+  }
+  document.getElementById('pbMode').textContent = '● LIVE';
+  document.getElementById('pbMode').className = 'pb-mode live';
+  document.getElementById('pbPlay').textContent = '▶';
+  document.getElementById('pbTime').textContent = 'LIVE';
+  const slider = document.getElementById('pbSlider');
+  slider.value = Math.max(0, snapshots.length - 1);
+}
+
+function clearPlaybackMarkers() {
+  for (const [, v] of playbackMarkers) {
+    if (v.marker) map.removeLayer(v.marker);
+    if (v.polyline) map.removeLayer(v.polyline);
+  }
+  playbackMarkers.clear();
+}
+
+function renderSnapshot(index) {
+  if (index < 0 || index >= snapshots.length) return;
+  const snap = snapshots[index];
+  document.getElementById('pbTime').textContent =
+    snap.time.toLocaleDateString([], {month:'short',day:'numeric'}) + ' ' +
+    snap.time.toLocaleTimeString();
+  document.getElementById('pbSlider').value = index;
+
+  // Build trails from history
+  const trails = {};
+  for (let i = 0; i <= index; i++) {
+    for (const [mmsi, v] of Object.entries(snapshots[i].vessels)) {
+      if (!trails[mmsi]) trails[mmsi] = [];
+      trails[mmsi].push([v.lat, v.lon]);
+    }
+  }
+
+  const current = snap.vessels;
+  const seen = new Set();
+  for (const [mmsi, v] of Object.entries(current)) {
+    seen.add(mmsi);
+    const color = shipColor(v.type);
+    const trail = trails[mmsi] || [[v.lat, v.lon]];
+    const ex = playbackMarkers.get(mmsi);
+    if (ex) {
+      ex.marker.setLatLng([v.lat, v.lon]);
+      ex.marker.setIcon(makeDot(color, v.sog, false));
+      ex.polyline.setLatLngs(trail);
+      ex.polyline.setStyle({ color, weight: TRAIL_WEIGHT, opacity: TRAIL_OPACITY });
+    } else {
+      const marker = L.marker([v.lat, v.lon], { icon: makeDot(color, v.sog, false) }).addTo(map);
+      marker.on('click', () => {
+        marker.unbindPopup();
+        marker.bindPopup(`
+          <div class="popup-name">${v.name || 'UNKNOWN'}</div>
+          <div><span class="popup-label">MMSI:</span> <span class="popup-val">${mmsi}</span></div>
+          <div><span class="popup-label">Type:</span> <span class="popup-val">${shipTypeName(v.type)}</span></div>
+          <div><span class="popup-label">SOG:</span> <span class="popup-val">${v.sog.toFixed(1)} kn</span></div>
+          <div><span class="popup-label">COG:</span> <span class="popup-val">${v.cog.toFixed(1)}°</span></div>
+          <div style="margin-top:4px;font-size:9px;color:#6b7785">Snapshot ${index+1} / ${snapshots.length}</div>
+        `, { maxWidth: 260 }).openPopup();
+      });
+      const polyline = L.polyline(trail, { color, weight: TRAIL_WEIGHT, opacity: TRAIL_OPACITY }).addTo(map);
+      playbackMarkers.set(mmsi, { marker, polyline });
+    }
+  }
+  for (const [mmsi, v] of playbackMarkers) {
+    if (!seen.has(mmsi)) { map.removeLayer(v.marker); map.removeLayer(v.polyline); playbackMarkers.delete(mmsi); }
+  }
+  document.getElementById('vesselCount').textContent = Object.keys(current).length;
+}
+
+function goLive() { exitPlayback(); }
+function scrubTo(val) {
+  const idx = parseInt(val); if (snapshots.length === 0) return;
+  if (!playbackMode) enterPlayback(idx); else { playbackIndex = idx; renderSnapshot(idx); }
+}
+function stepBack() {
+  if (snapshots.length === 0) return;
+  if (!playbackMode) enterPlayback(Math.max(0, snapshots.length - 2));
+  else if (playbackIndex > 0) { playbackIndex--; renderSnapshot(playbackIndex); }
+}
+function stepForward() {
+  if (snapshots.length === 0 || !playbackMode) return;
+  if (playbackIndex < snapshots.length - 1) { playbackIndex++; renderSnapshot(playbackIndex); }
+  else exitPlayback();
+}
+function togglePlayback() {
+  if (snapshots.length < 2) { logSys('Need ≥2 snapshots to play'); return; }
+  if (!playbackMode) { enterPlayback(0); startPlaying(); }
+  else if (playbackPlaying) stopPlaying(); else startPlaying();
+}
+function startPlaying() {
+  playbackPlaying = true; document.getElementById('pbPlay').textContent = '⏸';
+  playbackTimer = setInterval(() => {
+    if (playbackIndex < snapshots.length - 1) { playbackIndex++; renderSnapshot(playbackIndex); }
+    else { stopPlaying(); logSys('Playback ended'); }
+  }, 1000 / playbackSpeed);
+}
+function stopPlaying() {
+  playbackPlaying = false; if (playbackTimer) { clearInterval(playbackTimer); playbackTimer = null; }
+  document.getElementById('pbPlay').textContent = '▶';
+}
+function cycleSpeed() {
+  speedIndex = (speedIndex + 1) % SPEEDS.length; playbackSpeed = SPEEDS[speedIndex];
+  document.getElementById('pbSpeed').textContent = playbackSpeed + '×';
+  if (playbackPlaying) { stopPlaying(); startPlaying(); }
+}
+
+// ═══════════════════════════════════════
+//  HOUSEKEEPING
+// ═══════════════════════════════════════
+setInterval(() => {
+  msgWindow = msgWindow.filter(t => Date.now() - t < 5000);
+  document.getElementById('msgRate').textContent = (msgWindow.length / 5).toFixed(1);
+}, 1000);
+setInterval(() => {
+  if (playbackMode) return;
+  const now = Date.now();
+  for (const [mmsi, v] of liveVessels) {
+    if (now - v.lastSeen > 300000) {
+      if (v.marker) map.removeLayer(v.marker); if (v.polyline) map.removeLayer(v.polyline);
+      liveVessels.delete(mmsi);
+    }
+  }
+  document.getElementById('vesselCount').textContent = liveVessels.size;
+}, 30000);
+
+// ═══════════════════════════════════════
+//  WEBSOCKET
+// ═══════════════════════════════════════
+function toggleConnection() { connected ? disconnect() : connect(); }
+function connect() {
+  const apiKey = document.getElementById('apiKey').value.trim();
+  if (!apiKey) { alert('Enter API key'); return; }
+  setStatus('connecting'); logSys('Connecting to proxy...');
+  try { ws = new WebSocket('ws://localhost:9000'); }
+  catch (e) { setStatus('off'); logErr('Failed: ' + e.message); return; }
+  ws.onopen = () => { logSys('Connected. Streaming + recording...'); connected = true; setStatus('on');
+    if (!lastSnapshotTime) lastSnapshotTime = Date.now(); };
+  ws.onmessage = (ev) => { try { const msg = JSON.parse(ev.data);
+    if (msg.error||msg.Error) { logErr('Server: '+JSON.stringify(msg)); return; }
+    if (msg.MessageType && msg.MetaData) handleMessage(msg);
+  } catch (e) { logErr('Parse: ' + e.message); } };
+  ws.onerror = () => logErr('WebSocket error — is ais_proxy.py running?');
+  ws.onclose = (ev) => { connected = false; setStatus('off'); logSys(`Closed (${ev.code})`);
+    if (!manualDisconnect) { logSys('Reconnecting in 5s...'); reconnectTimer = setTimeout(connect, 5000); } };
+  manualDisconnect = false;
+}
+function disconnect() { manualDisconnect = true; if (reconnectTimer) clearTimeout(reconnectTimer);
+  if (ws) { ws.close(); ws = null; } connected = false; setStatus('off'); logSys('Disconnected'); }
+function setStatus(s) {
+  document.getElementById('statusDot').className = 'status-dot ' + (s==='on'?'on':s==='connecting'?'connecting':'off');
+  document.getElementById('statusText').textContent = s==='on'?'Connected':s==='connecting'?'Connecting...':'Disconnected';
+  const b = document.getElementById('connectBtn');
+  b.textContent = s==='on'?'Disconnect':'Connect'; b.className = s==='on'?'btn btn-disconnect':'btn btn-connect';
+  b.disabled = s==='connecting'; if (s==='connecting') setTimeout(()=>b.disabled=false, 3000);
+}
+
+document.getElementById('apiKey').value = localStorage.getItem('aisstream_key') || '69d038ee63578ddc6d01327665ac6c73f1852596';
+document.getElementById('apiKey').addEventListener('change', e => localStorage.setItem('aisstream_key', e.target.value.trim()));
+
+// ═══════════════════════════════════════
+//  INIT — load stored snapshots on startup
+// ═══════════════════════════════════════
+(async function init() {
+  try {
+    await openDB();
+    logDb('Database opened');
+    const stored = await dbLoadAll();
+    if (stored.length > 0) {
+      snapshots.push(...stored);
+      updateSlider();
+      const first = stored[0].time.toLocaleString();
+      const last = stored[stored.length - 1].time.toLocaleString();
+      logDb(`Loaded ${stored.length} snapshots from storage`);
+      logDb(`${first} → ${last}`);
+    }
+    updateDbInfo();
+  } catch (e) {
+    logErr('DB init failed: ' + e.message);
+  }
+})();
+</script>
+</body>
+</html>
