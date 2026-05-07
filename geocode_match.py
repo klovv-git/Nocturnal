@@ -110,39 +110,60 @@ def _bbox_deg(lat: float, lon: float, radius_m: float
 
 # ────────────────────── pixel → geo ──────────────────────
 
+def _parse_geolocation_grid(safe: Path, pol: str
+                            ) -> Tuple[np.ndarray, np.ndarray,
+                                       np.ndarray, np.ndarray]:
+    """
+    Parse the Sentinel-1 annotation XML geolocationGridPoint elements.
+
+    Every Sentinel-1 SAFE contains an annotation XML with a regular grid
+    of (line, pixel, latitude, longitude) points — typically one point
+    every ~500 pixels. This is the authoritative geocoding source and
+    requires only the built-in xml module.
+
+    Returns (rows, cols, lats, lons) as float64 arrays.
+    """
+    import xml.etree.ElementTree as ET
+    ann_glob = f"annotation/s1*-iw-grd-{pol.lower()}-*.xml"
+    matches = list(safe.glob(ann_glob))
+    if not matches:
+        # Try without the iw- prefix (EW or SM modes)
+        matches = list(safe.glob(f"annotation/*-{pol.lower()}-*.xml"))
+    if not matches:
+        raise FileNotFoundError(
+            f"No annotation XML for pol={pol} under {safe}")
+    tree = ET.parse(matches[0])
+    rows, cols, lats, lons = [], [], [], []
+    for pt in tree.getroot().findall(".//geolocationGridPoint"):
+        rows.append(float(pt.find("line").text))
+        cols.append(float(pt.find("pixel").text))
+        lats.append(float(pt.find("latitude").text))
+        lons.append(float(pt.find("longitude").text))
+    return (np.array(rows, dtype=np.float64),
+            np.array(cols, dtype=np.float64),
+            np.array(lats, dtype=np.float64),
+            np.array(lons, dtype=np.float64))
+
+
 def _open_gcp_transform(safe: Path, pol: str):
     """
-    Open the measurement .tiff and build scipy interpolators from the
-    embedded GCPs (pixel row/col → lon/lat).
+    Build scipy interpolators (pixel row/col → lon/lat) by parsing the
+    Sentinel-1 annotation XML geolocation grid.
 
-    We use GDAL directly (via osgeo) rather than rasterio's GCP wrapper
-    because some rasterio builds on Windows expose GCP attributes as raw
-    np.bytes_ instead of floats.  GDAL's GCPLine/GCPPixel/GCPX/GCPY are
-    always proper Python floats.
+    This avoids rasterio's GCP wrapper entirely — on some Windows builds
+    rasterio exposes GCP attributes as raw np.bytes_ instead of floats,
+    and osgeo (GDAL Python bindings) is not available when rasterio ships
+    its own bundled GDAL.  The annotation XML is always present and uses
+    only the built-in xml module.
     """
-    from osgeo import gdal
     tif = locate_measurement(safe, pol)
+    src = rasterio.open(tif)   # still needed so process_scene can close it
 
-    ds = gdal.Open(str(tif))
-    if ds is None:
-        raise RuntimeError(f"GDAL could not open {tif}")
-    raw_gcps = ds.GetGCPs()
-    if not raw_gcps:
-        raise RuntimeError(
-            f"No GCPs on {tif.name} — cannot geolocate. "
-            "This is unusual for Sentinel-1 IW GRD; check the product.")
-
-    rows = np.array([g.GCPLine  for g in raw_gcps], dtype=np.float64)
-    cols = np.array([g.GCPPixel for g in raw_gcps], dtype=np.float64)
-    lons = np.array([g.GCPX    for g in raw_gcps], dtype=np.float64)
-    lats = np.array([g.GCPY    for g in raw_gcps], dtype=np.float64)
-    ds = None   # close GDAL dataset
-
+    rows, cols, lats, lons = _parse_geolocation_grid(safe, pol)
     pts = np.column_stack([rows, cols])
     lon_interp = LinearNDInterpolator(pts, lons)
     lat_interp = LinearNDInterpolator(pts, lats)
 
-    src = rasterio.open(tif)   # keep rasterio handle for caller cleanup
     return src, (lon_interp, lat_interp), None
 
 
