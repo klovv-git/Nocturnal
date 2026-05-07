@@ -44,11 +44,12 @@ from pathlib import Path
 from typing import Iterable, List, Optional, Tuple
 
 try:
+    import numpy as np
     import rasterio
-    from rasterio.transform import from_gcps
+    from scipy.interpolate import LinearNDInterpolator
 except ImportError as e:
     raise SystemExit(
-        "geocode_match.py needs: pip install rasterio\n"
+        "geocode_match.py needs: pip install rasterio scipy numpy\n"
         f"Missing: {getattr(e, 'name', e)}") from e
 
 # Phase 3 already depends on sar_preprocess; reuse its locator.
@@ -92,12 +93,12 @@ def _bbox_deg(lat: float, lon: float, radius_m: float
 
 def _open_gcp_transform(safe: Path, pol: str):
     """
-    Open the measurement .tiff and return (transform, crs).
+    Open the measurement .tiff and build scipy interpolators from the
+    embedded GCPs (pixel row/col → lon/lat).
 
-    Sentinel-1 GRD .tiff files carry GCPs in their metadata (not a
-    plain affine), so rasterio.transform.xy() against src.transform
-    would be wrong. We build a polynomial transform from the GCPs
-    instead; this is what rasterio's own warping path uses.
+    Sentinel-1 GRD files carry ~500 GCPs in a regular grid. We use
+    LinearNDInterpolator so the mapping works anywhere inside the scene
+    without the numerical issues of rasterio's from_gcps path.
     """
     tif = locate_measurement(safe, pol)
     src = rasterio.open(tif)
@@ -107,21 +108,30 @@ def _open_gcp_transform(safe: Path, pol: str):
         raise RuntimeError(
             f"No GCPs on {tif.name} — cannot geolocate. "
             "This is unusual for Sentinel-1 IW GRD; check the product.")
-    transform = from_gcps(gcps)
-    return src, transform, crs
+
+    rows = np.array([g.row for g in gcps], dtype=np.float64)
+    cols = np.array([g.col for g in gcps], dtype=np.float64)
+    lons = np.array([g.x  for g in gcps], dtype=np.float64)
+    lats = np.array([g.y  for g in gcps], dtype=np.float64)
+    pts  = np.column_stack([rows, cols])
+
+    lon_interp = LinearNDInterpolator(pts, lons)
+    lat_interp = LinearNDInterpolator(pts, lats)
+
+    return src, (lon_interp, lat_interp), crs
 
 
 def pixel_to_lonlat(transform, row: float, col: float
                     ) -> Tuple[float, float]:
     """
-    Map a full-scene pixel (row, col) to world coords using a
-    GCP-derived transform. Rasterio returns (x, y); for a GRD
-    footprint that's (lon, lat) in EPSG:4326.
+    Map a full-scene pixel (row, col) to (lon, lat) using the
+    scipy interpolators built from the scene's GCPs.
     """
-    # Use centre-of-pixel convention (offset="center") to match how
-    # detection centres are defined in Phase 3.
-    x, y = rasterio.transform.xy(transform, row, col, offset="center")
-    return float(x), float(y)
+    lon_interp, lat_interp = transform
+    query = np.array([[row, col]])
+    lon = float(lon_interp(query)[0])
+    lat = float(lat_interp(query)[0])
+    return lon, lat
 
 
 # ────────────────────── AIS match ──────────────────────
