@@ -115,29 +115,35 @@ def _open_gcp_transform(safe: Path, pol: str):
     Open the measurement .tiff and build scipy interpolators from the
     embedded GCPs (pixel row/col → lon/lat).
 
-    Sentinel-1 GRD files carry ~500 GCPs in a regular grid. We use
-    LinearNDInterpolator so the mapping works anywhere inside the scene
-    without the numerical issues of rasterio's from_gcps path.
+    We use GDAL directly (via osgeo) rather than rasterio's GCP wrapper
+    because some rasterio builds on Windows expose GCP attributes as raw
+    np.bytes_ instead of floats.  GDAL's GCPLine/GCPPixel/GCPX/GCPY are
+    always proper Python floats.
     """
+    from osgeo import gdal
     tif = locate_measurement(safe, pol)
-    src = rasterio.open(tif)
-    gcps, crs = src.gcps
-    if not gcps:
-        src.close()
+
+    ds = gdal.Open(str(tif))
+    if ds is None:
+        raise RuntimeError(f"GDAL could not open {tif}")
+    raw_gcps = ds.GetGCPs()
+    if not raw_gcps:
         raise RuntimeError(
             f"No GCPs on {tif.name} — cannot geolocate. "
             "This is unusual for Sentinel-1 IW GRD; check the product.")
 
-    rows = np.array([_gcp_val(g.row) for g in gcps], dtype=np.float64)
-    cols = np.array([_gcp_val(g.col) for g in gcps], dtype=np.float64)
-    lons = np.array([_gcp_val(g.x)   for g in gcps], dtype=np.float64)
-    lats = np.array([_gcp_val(g.y)   for g in gcps], dtype=np.float64)
-    pts  = np.column_stack([rows, cols])
+    rows = np.array([g.GCPLine  for g in raw_gcps], dtype=np.float64)
+    cols = np.array([g.GCPPixel for g in raw_gcps], dtype=np.float64)
+    lons = np.array([g.GCPX    for g in raw_gcps], dtype=np.float64)
+    lats = np.array([g.GCPY    for g in raw_gcps], dtype=np.float64)
+    ds = None   # close GDAL dataset
 
+    pts = np.column_stack([rows, cols])
     lon_interp = LinearNDInterpolator(pts, lons)
     lat_interp = LinearNDInterpolator(pts, lats)
 
-    return src, (lon_interp, lat_interp), crs
+    src = rasterio.open(tif)   # keep rasterio handle for caller cleanup
+    return src, (lon_interp, lat_interp), None
 
 
 def pixel_to_lonlat(transform, row: float, col: float
