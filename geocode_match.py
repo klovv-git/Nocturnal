@@ -54,6 +54,17 @@ except ImportError as e:
         "geocode_match.py needs: pip install rasterio scipy numpy\n"
         f"Missing: {getattr(e, 'name', e)}") from e
 
+try:
+    from global_land_mask import globe as _globe
+    def is_ocean(lat: float, lon: float) -> bool:
+        """Return True if the point is over ocean (not land)."""
+        return bool(_globe.is_ocean(lat, lon))
+except ImportError:
+    # Fallback: rough English Channel bounding box.
+    # Good enough if global-land-mask isn't installed.
+    def is_ocean(lat: float, lon: float) -> bool:
+        return (49.0 <= lat <= 51.5) and (-6.0 <= lon <= 2.5)
+
 
 def _gcp_val(v) -> float:
     """
@@ -281,6 +292,7 @@ def process_scene(scene_name: str,
 
         updates: List[tuple] = []
         n_dark = n_match = 0
+        n_land = 0
         try:
             for det_id, py, px, _ in dets:
                 # pixel_x/pixel_y may have been stored as numpy float32
@@ -288,6 +300,12 @@ def process_scene(scene_name: str,
                 py = _gcp_val(py)
                 px = _gcp_val(px)
                 lon, lat = pixel_to_lonlat(transform, py, px)
+                # Skip detections that land on land — the model fires on
+                # bright urban/agricultural features which are never ships.
+                if not is_ocean(lat, lon):
+                    n_land += 1
+                    updates.append((lat, lon, None, None, None, det_id))
+                    continue
                 m = _nearest_ping(conn, lat, lon, t_mid, dt_s, radius_m)
                 if m is None:
                     n_dark += 1
@@ -312,7 +330,8 @@ def process_scene(scene_name: str,
         conn.commit()
 
         return {"scene": scene_name, "detections": len(dets),
-                "matched": n_match, "dark": n_dark, "t_mid": t_mid}
+                "land": n_land, "matched": n_match, "dark": n_dark,
+                "t_mid": t_mid}
     finally:
         conn.close()
 
