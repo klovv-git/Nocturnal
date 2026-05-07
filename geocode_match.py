@@ -283,6 +283,10 @@ def process_scene(scene_name: str,
         n_dark = n_match = 0
         try:
             for det_id, py, px, _ in dets:
+                # pixel_x/pixel_y may have been stored as numpy float32
+                # bytes by an older run — coerce them to plain floats.
+                py = _gcp_val(py)
+                px = _gcp_val(px)
                 lon, lat = pixel_to_lonlat(transform, py, px)
                 m = _nearest_ping(conn, lat, lon, t_mid, dt_s, radius_m)
                 if m is None:

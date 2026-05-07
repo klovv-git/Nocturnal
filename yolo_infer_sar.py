@@ -188,8 +188,8 @@ def run_inference(safe: Path,
         cf   = result.boxes.conf.cpu().numpy()
         for (x1, y1, x2, y2), k, p in zip(xyxy, cls, cf):
             raw.append(Detection(
-                pixel_x=c0 + (x1 + x2) / 2.0,
-                pixel_y=r0 + (y1 + y2) / 2.0,
+                pixel_x=float(c0 + (x1 + x2) / 2.0),
+                pixel_y=float(r0 + (y1 + y2) / 2.0),
                 w=float(x2 - x1), h=float(y2 - y1),
                 conf=float(p), cls=int(k)))
 
