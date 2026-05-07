@@ -281,10 +281,14 @@ def main(argv: Optional[List[str]] = None) -> int:
     args = ap.parse_args(argv)
 
     if args.cmd == "tile":
-        paths = grd_to_tiles(args.safe, args.out,
+        # Auto-create a subfolder named after the scene so multiple runs
+        # don't overwrite each other. e.g. tiles/S1D_IW_GRDH_20260507.../
+        scene_stem = Path(args.safe).name.replace(".SAFE", "")
+        out_dir = Path(args.out) / scene_stem
+        paths = grd_to_tiles(args.safe, out_dir,
                              pol=args.pol, tile=args.tile, overlap=args.overlap,
                              skip_blank=not args.keep_blank)
-        print(f"[ok] wrote {len(paths)} tiles to {args.out}")
+        print(f"[ok] wrote {len(paths)} tiles to {out_dir}")
     elif args.cmd == "labels":
         n = lsssdd_to_yolo(args.xml_dir, args.out)
         print(f"[ok] converted {n} xml → yolo .txt in {args.out}")

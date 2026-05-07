@@ -150,7 +150,13 @@ def run_inference(safe: Path,
 
     safe = Path(safe)
     weights = Path(weights)
-    workdir = Path(workdir or tempfile.mkdtemp(prefix="nocturnal_tiles_"))
+    scene_stem = safe.name.replace(".SAFE", "")
+    if workdir:
+        # Use a scene-named subfolder so multiple runs don't overwrite each other
+        workdir = Path(workdir) / scene_stem
+        workdir.mkdir(parents=True, exist_ok=True)
+    else:
+        workdir = Path(tempfile.mkdtemp(prefix="nocturnal_tiles_"))
     print(f"[infer] scene={safe.name}")
     print(f"[infer] tiles -> {workdir}")
 
