@@ -43,6 +43,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, List, Optional, Tuple
 
+import struct
+
 try:
     import numpy as np
     import rasterio
@@ -51,6 +53,23 @@ except ImportError as e:
     raise SystemExit(
         "geocode_match.py needs: pip install rasterio scipy numpy\n"
         f"Missing: {getattr(e, 'name', e)}") from e
+
+
+def _gcp_val(v) -> float:
+    """
+    Safely convert a GCP attribute to a Python float.
+
+    On some rasterio/GDAL builds (particularly Windows) the raw C float
+    is exposed as np.bytes_ instead of a Python float.  We detect and
+    unpack it with struct so the rest of the code can treat it normally.
+    """
+    if isinstance(v, (bytes, np.bytes_)):
+        b = bytes(v)
+        if len(b) == 8:
+            return struct.unpack("<d", b)[0]   # double
+        if len(b) == 4:
+            return struct.unpack("<f", b)[0]   # float
+    return float(v)
 
 # Phase 3 already depends on sar_preprocess; reuse its locator.
 from sar_preprocess import locate_measurement   # noqa: E402
@@ -109,10 +128,10 @@ def _open_gcp_transform(safe: Path, pol: str):
             f"No GCPs on {tif.name} — cannot geolocate. "
             "This is unusual for Sentinel-1 IW GRD; check the product.")
 
-    rows = np.array([g.row for g in gcps], dtype=np.float64)
-    cols = np.array([g.col for g in gcps], dtype=np.float64)
-    lons = np.array([g.x  for g in gcps], dtype=np.float64)
-    lats = np.array([g.y  for g in gcps], dtype=np.float64)
+    rows = np.array([_gcp_val(g.row) for g in gcps], dtype=np.float64)
+    cols = np.array([_gcp_val(g.col) for g in gcps], dtype=np.float64)
+    lons = np.array([_gcp_val(g.x)   for g in gcps], dtype=np.float64)
+    lats = np.array([_gcp_val(g.y)   for g in gcps], dtype=np.float64)
     pts  = np.column_stack([rows, cols])
 
     lon_interp = LinearNDInterpolator(pts, lons)
