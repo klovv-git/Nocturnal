@@ -27,34 +27,35 @@ BASE_WEIGHTS  = "yolov8n.pt"   # pretrained starting point
 PROJECT       = "runs/nocturnal"
 RUN_NAME      = "yolov8n-sar-finetune"
 
-if not DATASET_YAML.exists():
-    raise SystemExit(f"Dataset not found at: {DATASET_YAML}\n"
-                     "Unzip the Roboflow download into the Nocturnal folder first.")
+if __name__ == "__main__":
+    if not DATASET_YAML.exists():
+        raise SystemExit(f"Dataset not found at: {DATASET_YAML}\n"
+                         "Unzip the Roboflow download into the Nocturnal folder first.")
 
-print(f"[train] dataset : {DATASET_YAML}")
-print(f"[train] base    : {BASE_WEIGHTS}")
-print(f"[train] output  : {PROJECT}/{RUN_NAME}/weights/best.pt")
-print()
+    print(f"[train] dataset : {DATASET_YAML}")
+    print(f"[train] base    : {BASE_WEIGHTS}")
+    print(f"[train] output  : {PROJECT}/{RUN_NAME}/weights/best.pt")
+    print()
 
-model = YOLO(BASE_WEIGHTS)
+    model = YOLO(BASE_WEIGHTS)
 
-results = model.train(
-    data=str(DATASET_YAML),
-    epochs=50,
-    imgsz=800,      # matches our tile size exactly
-    batch=16,       # safe for 10 GB VRAM with YOLOv8n at 800px
-    device=0,       # GPU 0
-    project=PROJECT,
-    name=RUN_NAME,
-    exist_ok=True,  # overwrite if run already exists
-    patience=10,    # stop early if no improvement for 10 epochs
-    save=True,
-    plots=True,
-)
+    results = model.train(
+        data=str(DATASET_YAML),
+        epochs=50,
+        imgsz=800,      # matches our tile size exactly
+        batch=16,       # safe for 10 GB VRAM with YOLOv8n at 800px
+        device=0,       # GPU 0
+        project=PROJECT,
+        name=RUN_NAME,
+        exist_ok=True,  # overwrite if run already exists
+        patience=10,    # stop early if no improvement for 10 epochs
+        save=True,
+        plots=True,
+    )
 
-best = Path(PROJECT) / RUN_NAME / "weights" / "best.pt"
-print()
-print(f"[done] Best weights: {best}")
-print()
-print("Next step — run inference with the fine-tuned model:")
-print(f'  python yolo_infer_sar.py <SAFE> --weights "{best}" --db ais_memory.db --conf 0.25')
+    best = Path(PROJECT) / RUN_NAME / "weights" / "best.pt"
+    print()
+    print(f"[done] Best weights: {best}")
+    print()
+    print("Next step — run inference with the fine-tuned model:")
+    print(f'  python yolo_infer_sar.py <SAFE> --weights "{best}" --db ais_memory.db --conf 0.25')
