@@ -1,45 +1,33 @@
 import sqlite3
-import math
-from datetime import datetime, timezone
+from global_land_mask import globe
 
 c = sqlite3.connect("ais_memory.db")
 
-t_mid = 1778134016  # 2026-05-07 06:06:56 UTC
-t_lo  = t_mid - 1800
-t_hi  = t_mid + 1800
-
-# Pull all detections for the May 7th scene
-dets = c.execute(
-    "SELECT id, lat, lon FROM detections "
-    "WHERE scene_name LIKE '%20260507%' AND lat IS NOT NULL LIMIT 20"
+# Get all detections for May 7th, ordered by id descending (newest first)
+rows = c.execute(
+    "SELECT id, pixel_x, pixel_y, lat, lon, dark "
+    "FROM detections WHERE scene_name LIKE '%20260507%' "
+    "AND lat IS NOT NULL ORDER BY id DESC LIMIT 60"
 ).fetchall()
 
-# Pull a sample of AIS pings in the time window
-ais = c.execute(
-    "SELECT mmsi, lat, lon FROM positions "
-    "WHERE ts_epoch BETWEEN ? AND ? LIMIT 5000",
-    (t_lo, t_hi)
-).fetchall()
+print(f"{'id':>6}  {'pixel_x':>8}  {'pixel_y':>8}  {'lat':>8}  {'lon':>8}  {'ocean?':>7}  dark")
+print("-" * 70)
+ocean_count = 0
+for det_id, px, py, lat, lon, dark in rows:
+    try:
+        ocean = globe.is_ocean(lat, lon)
+    except Exception:
+        ocean = False
+    if ocean:
+        ocean_count += 1
+    print(f"{det_id:>6}  {px:>8.1f}  {py:>8.1f}  {lat:>8.4f}  {lon:>8.4f}  "
+          f"{'YES' if ocean else 'no':>7}  {dark}")
 
-print(f"Checking {len(dets)} detections against {len(ais)} AIS pings\n")
-
-def haversine_km(lat1, lon1, lat2, lon2):
-    R = 6371.0
-    dlat = math.radians(lat2 - lat1)
-    dlon = math.radians(lon2 - lon1)
-    a = math.sin(dlat/2)**2 + math.cos(math.radians(lat1)) * math.cos(math.radians(lat2)) * math.sin(dlon/2)**2
-    return 2 * R * math.asin(math.sqrt(a))
-
-for det_id, dlat, dlon in dets[:5]:
-    best_dist = float('inf')
-    best_mmsi = None
-    for mmsi, alat, alon in ais:
-        try:
-            d = haversine_km(dlat, dlon, alat, alon)
-            if d < best_dist:
-                best_dist = d
-                best_mmsi = mmsi
-        except Exception:
-            pass
-    print(f"Detection {det_id} at ({dlat:.4f}, {dlon:.4f}): "
-          f"nearest AIS ping = MMSI {best_mmsi} at {best_dist:.2f} km")
+print()
+print(f"Ocean detections: {ocean_count} / {len(rows)}")
+print()
+# What's the lat range?
+if rows:
+    lats = [r[3] for r in rows if r[3] is not None]
+    print(f"Lat range: {min(lats):.4f} to {max(lats):.4f}")
+    print(f"Channel sea starts around 49.5N")
