@@ -51,6 +51,7 @@ if __name__ == "__main__":
         patience=10,    # stop early if no improvement for 10 epochs
         save=True,
         plots=True,
+        workers=0,  # disable multiprocessing on Windows
     )
 
     best = Path(PROJECT) / RUN_NAME / "weights" / "best.pt"
