@@ -22,7 +22,7 @@ try:
 except ImportError:
     raise SystemExit("Missing ultralytics. Run: pip install ultralytics")
 
-DATASET_YAML = Path("SAR Ship Data Detection.v1i.yolov8") / "data.yaml"
+DATASET_YAML = Path("sar-ship.v1i.yolov8") / "data.yaml"
 BASE_WEIGHTS  = "yolov8n.pt"   # pretrained starting point
 PROJECT       = "runs/nocturnal"
 RUN_NAME      = "yolov8n-sar-finetune"
