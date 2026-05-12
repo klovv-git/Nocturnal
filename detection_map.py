@@ -52,23 +52,14 @@ def main():
 
     conn = sqlite3.connect(args.db)
 
-    # check whether ais_pings has a vessel_name column
-    try:
-        cols = [r[1] for r in conn.execute("PRAGMA table_info(ais_pings)").fetchall()]
-        has_vessel_name = "vessel_name" in cols
-    except Exception:
-        has_vessel_name = False
-
     def lookup_vessel_name(mmsi):
-        if not mmsi or not has_vessel_name:
+        if not mmsi:
             return None
         row = conn.execute(
-            """SELECT vessel_name FROM ais_pings
-               WHERE mmsi = ? AND vessel_name IS NOT NULL AND vessel_name != ''
-               LIMIT 1""",
-            (str(mmsi),)
+            "SELECT name FROM vessels WHERE mmsi = ? LIMIT 1",
+            (mmsi,)
         ).fetchone()
-        return row[0].strip() if row else None
+        return row[0].strip() if row and row[0] else None
 
     dets = conn.execute(
         """SELECT id, lat, lon, confidence, dark, matched_mmsi, match_dist_m

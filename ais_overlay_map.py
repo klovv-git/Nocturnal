@@ -101,9 +101,9 @@ def main():
     # query AIS pings within time window and bounding box
     print(f"Querying AIS pings for {scene_time} ±{args.window//60} min ...")
     ais_rows = conn.execute(
-        """SELECT mmsi, lat, lon, timestamp
-           FROM ais_pings
-           WHERE timestamp BETWEEN ? AND ?
+        """SELECT mmsi, lat, lon, ts_epoch
+           FROM positions
+           WHERE ts_epoch BETWEEN ? AND ?
              AND lat BETWEEN ? AND ?
              AND lon BETWEEN ? AND ?""",
         (t_lo, t_hi, lat_min, lat_max, lon_min, lon_max)
@@ -120,6 +120,13 @@ def main():
     # build marker data
     markers_data = []
 
+    # build vessel name lookup from vessels table
+    vessel_names = {}
+    rows = conn.execute("SELECT mmsi, name FROM vessels").fetchall()
+    for vmmi, vname in rows:
+        if vname:
+            vessel_names[vmmi] = vname.strip()
+
     # AIS snapshot layer (blue)
     for mmsi, (lat, lon, ts) in best.items():
         markers_data.append({
@@ -128,6 +135,7 @@ def main():
             "color": "#3498db",
             "type":  "ais",
             "mmsi":  mmsi,
+            "name":  vessel_names.get(mmsi, None),
             "time":  scene_time,
             "link":  f"https://www.marinetraffic.com/en/ais/details/ships/mmsi:{mmsi}",
         })
@@ -159,6 +167,7 @@ def main():
             "conf":  round(conf, 2),
             "time":  scene_time,
             "mmsi":  mmsi,
+            "name":  vessel_names.get(mmsi, None),
             "dist":  round(dist) if dist else None,
             "link":  f"https://www.marinetraffic.com/en/ais/details/ships/mmsi:{mmsi}",
         })
@@ -218,6 +227,9 @@ def main():
         radius  = 5;
         opacity = 0.5;
         html    = '<b>AIS VESSEL</b><br>';
+        if (m.name) {{
+          html += '<b>' + m.name + '</b><br>';
+        }}
         html   += 'MMSI: <a href="' + m.link + '" target="_blank">' + m.mmsi + ' ↗</a><br>';
         html   += 'Position at: ' + m.time + '<br>';
         html   += '(broadcasting AIS)';
@@ -241,6 +253,9 @@ def main():
         html   += 'Position: ' + m.lat.toFixed(5) + 'N, ' + m.lon.toFixed(5) + 'E<br>';
         html   += 'Satellite pass: ' + m.time + '<br>';
         html   += 'Confidence: ' + m.conf + '<br>';
+        if (m.name) {{
+          html += 'Vessel: <b>' + m.name + '</b><br>';
+        }}
         html   += 'MMSI: <a href="' + m.link + '" target="_blank">' + m.mmsi + ' ↗</a><br>';
         html   += 'AIS distance: ' + (m.dist !== null ? m.dist + 'm' : '?');
       }}
