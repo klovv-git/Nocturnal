@@ -80,7 +80,12 @@ def main():
                     help="max dark detections to extract")
     args = ap.parse_args()
 
-    OUT_DIR.mkdir(exist_ok=True)
+    # derive date from scene name, e.g. S1D_IW_..._20260512T061448_... -> 20260512
+    import re
+    date_match = re.search(r'_(\d{8})T', args.scene)
+    date_str = date_match.group(1) if date_match else "unknown"
+    out_dir = Path(f"dark_chips_{date_str}")
+    out_dir.mkdir(exist_ok=True)
     conn = sqlite3.connect(args.db)
 
     dets = conn.execute(
@@ -96,7 +101,7 @@ def main():
         print("No dark detections found for this scene.")
         return
 
-    print(f"Extracting {len(dets)} dark vessel chips -> {OUT_DIR}/")
+    print(f"Extracting {len(dets)} dark vessel chips -> {out_dir}/")
     for det_id, px, py, lat, lon, conf in dets:
         try:
             px = float(px); py = float(py)
@@ -111,11 +116,11 @@ def main():
         arr = extract_chip(args.safe, args.pol, px, py, args.chip)
         label = f"id={det_id}  conf={conf:.2f}\n{lat:.4f}N {lon:.4f}E"
         img = annotate(arr, f"DARK id={det_id} conf={conf:.2f}")
-        fname = OUT_DIR / f"dark_{det_id:04d}_{lat:.4f}N_{lon:.4f}E.png"
+        fname = out_dir / f"dark_{det_id:04d}_{lat:.4f}N_{lon:.4f}E.png"
         img.save(fname)
         print(f"  {fname.name}  ({lat:.4f}N, {lon:.4f}E)  conf={conf:.2f}")
 
-    print(f"\nDone. Open the '{OUT_DIR}' folder to see the radar chips.")
+    print(f"\nDone. Open the '{out_dir}' folder to see the radar chips.")
 
 
 if __name__ == "__main__":
