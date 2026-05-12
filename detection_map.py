@@ -191,7 +191,7 @@ def main():
         if (m.vessel_name) {{
           html += 'Vessel name: <b>' + m.vessel_name + '</b><br>';
         }}
-        html += 'MMSI: ' + m.mmsi + '<br>';
+        html += 'MMSI: <a href="https://www.marinetraffic.com/en/ais/details/ships/mmsi:' + m.mmsi + '" target="_blank">' + m.mmsi + ' ↗</a><br>';
         html += 'AIS distance: ' + (m.dist !== null ? m.dist + 'm' : '?');
       }}
       L.circleMarker([m.lat, m.lon], {{
