@@ -75,7 +75,7 @@ def main():
     # calculate t_mid from the two timestamps in the scene name
     # e.g. S1D_..._20260512T061448_20260512T061513_...
     import datetime, calendar
-    ts_matches = re.findall(r'_(\d{8}T\d{6})_', args.scene)
+    ts_matches = re.findall(r'(\d{8}T\d{6})', args.scene)
     if len(ts_matches) < 2:
         print("Could not parse start/end time from scene name.")
         return
