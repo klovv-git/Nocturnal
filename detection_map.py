@@ -12,6 +12,8 @@ Usage:
 """
 
 import argparse
+import base64
+import re
 import sqlite3
 from pathlib import Path
 
@@ -24,6 +26,27 @@ def main():
     ap.add_argument("--scene", required=True)
     ap.add_argument("--db", default=str(DEFAULT_DB))
     args = ap.parse_args()
+
+    # parse scene date and time, e.g. 20260512T061448 -> "2026-05-12 06:14:48 UTC"
+    dt_match = re.search(r'_(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})(\d{2})_', args.scene)
+    if dt_match:
+        y, mo, d, h, mi, s = dt_match.groups()
+        scene_time = f"{y}-{mo}-{d} {h}:{mi}:{s} UTC"
+    else:
+        scene_time = "unknown"
+
+    # find the dark_chips folder for this scene date
+    date_str = f"{y}{mo}{d}" if dt_match else None
+    chips_dir = Path(f"dark_chips_{date_str}") if date_str else None
+
+    def load_chip(det_id, lat, lon):
+        """Return a base64-encoded PNG string for this detection, or None."""
+        if not chips_dir or not chips_dir.exists():
+            return None
+        fname = chips_dir / f"dark_{det_id:04d}_{lat:.4f}N_{lon:.4f}E.png"
+        if not fname.exists():
+            return None
+        return base64.b64encode(fname.read_bytes()).decode("ascii")
 
     conn = sqlite3.connect(args.db)
 
@@ -50,16 +73,24 @@ def main():
     def marker_js(d, color):
         det_id, lat, lon, conf, dark_flag, mmsi, dist = d
         if dark_flag:
+            chip_b64 = load_chip(det_id, lat, lon)
+            img_html = (f'<br><img src=\\"data:image/png;base64,{chip_b64}\\" '
+                        f'style=\\"width:128px;height:128px;margin-top:6px;'
+                        f'border:1px solid #ccc;\\">'
+                        if chip_b64 else "")
             popup = (f"<b>DARK VESSEL CANDIDATE</b><br>"
                      f"Detection ID: {det_id}<br>"
                      f"Position: {lat:.5f}N, {lon:.5f}E<br>"
+                     f"Satellite pass: {scene_time}<br>"
                      f"Model confidence: {conf:.2f}<br>"
-                     f"No AIS signal within 1km / 30min")
+                     f"No AIS signal within 1km / 30min"
+                     f"{img_html}")
         else:
             dist_str = f"{dist:.0f}m" if dist else "?"
             popup = (f"<b>MATCHED VESSEL</b><br>"
                      f"Detection ID: {det_id}<br>"
                      f"Position: {lat:.5f}N, {lon:.5f}E<br>"
+                     f"Satellite pass: {scene_time}<br>"
                      f"Model confidence: {conf:.2f}<br>"
                      f"MMSI: {mmsi}<br>"
                      f"AIS distance: {dist_str}")
