@@ -13,6 +13,7 @@ Usage:
 
 import argparse
 import base64
+import json
 import re
 import sqlite3
 from pathlib import Path
@@ -27,16 +28,17 @@ def main():
     ap.add_argument("--db", default=str(DEFAULT_DB))
     args = ap.parse_args()
 
-    # parse scene date and time, e.g. 20260512T061448 -> "2026-05-12 06:14:48 UTC"
+    # parse scene date and time from scene name, e.g. 20260512T061448
     dt_match = re.search(r'_(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})(\d{2})_', args.scene)
     if dt_match:
         y, mo, d, h, mi, s = dt_match.groups()
         scene_time = f"{y}-{mo}-{d} {h}:{mi}:{s} UTC"
+        date_str   = f"{y}{mo}{d}"
     else:
         scene_time = "unknown"
+        date_str   = None
 
-    # find the dark_chips folder for this scene date
-    date_str = f"{y}{mo}{d}" if dt_match else None
+    # dark chips folder for this scene date
     chips_dir = Path(f"dark_chips_{date_str}") if date_str else None
 
     def load_chip(det_id, lat, lon):
@@ -49,6 +51,24 @@ def main():
         return base64.b64encode(fname.read_bytes()).decode("ascii")
 
     conn = sqlite3.connect(args.db)
+
+    # check whether ais_pings has a vessel_name column
+    try:
+        cols = [r[1] for r in conn.execute("PRAGMA table_info(ais_pings)").fetchall()]
+        has_vessel_name = "vessel_name" in cols
+    except Exception:
+        has_vessel_name = False
+
+    def lookup_vessel_name(mmsi):
+        if not mmsi or not has_vessel_name:
+            return None
+        row = conn.execute(
+            """SELECT vessel_name FROM ais_pings
+               WHERE mmsi = ? AND vessel_name IS NOT NULL AND vessel_name != ''
+               LIMIT 1""",
+            (str(mmsi),)
+        ).fetchone()
+        return row[0].strip() if row else None
 
     dets = conn.execute(
         """SELECT id, lat, lon, confidence, dark, matched_mmsi, match_dist_m
@@ -64,48 +84,44 @@ def main():
     dark    = [d for d in dets if d[4] == 1]
     matched = [d for d in dets if d[4] == 0]
 
-    # Centre map on mean position
+    # centre map on mean position
     all_lats = [d[1] for d in dets]
     all_lons = [d[2] for d in dets]
     clat = sum(all_lats) / len(all_lats)
     clon = sum(all_lons) / len(all_lons)
 
-    def marker_js(d, color):
-        det_id, lat, lon, conf, dark_flag, mmsi, dist = d
-        if dark_flag:
-            chip_b64 = load_chip(det_id, lat, lon)
-            img_html = (f'<br><img src=\\"data:image/png;base64,{chip_b64}\\" '
-                        f'style=\\"width:128px;height:128px;margin-top:6px;'
-                        f'border:1px solid #ccc;\\">'
-                        if chip_b64 else "")
-            popup = (f"<b>DARK VESSEL CANDIDATE</b><br>"
-                     f"Detection ID: {det_id}<br>"
-                     f"Position: {lat:.5f}N, {lon:.5f}E<br>"
-                     f"Satellite pass: {scene_time}<br>"
-                     f"Model confidence: {conf:.2f}<br>"
-                     f"No AIS signal within 1km / 30min"
-                     f"{img_html}")
-        else:
-            dist_str = f"{dist:.0f}m" if dist else "?"
-            popup = (f"<b>MATCHED VESSEL</b><br>"
-                     f"Detection ID: {det_id}<br>"
-                     f"Position: {lat:.5f}N, {lon:.5f}E<br>"
-                     f"Satellite pass: {scene_time}<br>"
-                     f"Model confidence: {conf:.2f}<br>"
-                     f"MMSI: {mmsi}<br>"
-                     f"AIS distance: {dist_str}")
-        return (f'L.circleMarker([{lat}, {lon}], '
-                f'{{radius: 8, color: "{color}", fillColor: "{color}", '
-                f'fillOpacity: 0.8, weight: 2}}).addTo(map)'
-                f'.bindPopup("{popup}");')
-
-    markers = []
-    for d in matched:
-        markers.append(marker_js(d, "#2ecc71"))   # green
+    # build marker data as a JSON array — avoids all JS string escaping issues
+    markers_data = []
     for d in dark:
-        markers.append(marker_js(d, "#e74c3c"))   # red
+        det_id, lat, lon, conf, _, mmsi, dist = d
+        chip_b64 = load_chip(det_id, lat, lon)
+        markers_data.append({
+            "lat":      lat,
+            "lon":      lon,
+            "color":    "#e74c3c",
+            "type":     "dark",
+            "id":       det_id,
+            "conf":     round(conf, 2),
+            "time":     scene_time,
+            "chip":     chip_b64,   # None if not found
+        })
+    for d in matched:
+        det_id, lat, lon, conf, _, mmsi, dist = d
+        vessel_name = lookup_vessel_name(mmsi)
+        markers_data.append({
+            "lat":         lat,
+            "lon":         lon,
+            "color":       "#2ecc71",
+            "type":        "matched",
+            "id":          det_id,
+            "conf":        round(conf, 2),
+            "time":        scene_time,
+            "mmsi":        mmsi,
+            "dist":        round(dist) if dist else None,
+            "vessel_name": vessel_name,
+        })
 
-    markers_js = "\n        ".join(markers)
+    markers_json = json.dumps(markers_data)
 
     html = f"""<!DOCTYPE html>
 <html>
@@ -131,6 +147,10 @@ def main():
       border-radius: 6px; box-shadow: 0 2px 8px rgba(0,0,0,0.3);
       font-size: 15px; font-weight: bold;
     }}
+    .popup-chip {{
+      display: block; width: 128px; height: 128px;
+      margin-top: 8px; border: 1px solid #ccc;
+    }}
   </style>
 </head>
 <body>
@@ -147,7 +167,38 @@ def main():
     L.tileLayer('https://{{s}}.tile.openstreetmap.org/{{z}}/{{x}}/{{y}}.png', {{
       attribution: '© OpenStreetMap contributors'
     }}).addTo(map);
-    {markers_js}
+
+    var markers = {markers_json};
+
+    markers.forEach(function(m) {{
+      var html;
+      if (m.type === 'dark') {{
+        html  = '<b>DARK VESSEL CANDIDATE</b><br>';
+        html += 'Detection ID: ' + m.id + '<br>';
+        html += 'Position: ' + m.lat.toFixed(5) + 'N, ' + m.lon.toFixed(5) + 'E<br>';
+        html += 'Satellite pass: ' + m.time + '<br>';
+        html += 'Model confidence: ' + m.conf + '<br>';
+        html += 'No AIS signal within 1km / 30min';
+        if (m.chip) {{
+          html += '<br><img class="popup-chip" src="data:image/png;base64,' + m.chip + '">';
+        }}
+      }} else {{
+        html  = '<b>MATCHED VESSEL</b><br>';
+        html += 'Detection ID: ' + m.id + '<br>';
+        html += 'Position: ' + m.lat.toFixed(5) + 'N, ' + m.lon.toFixed(5) + 'E<br>';
+        html += 'Satellite pass: ' + m.time + '<br>';
+        html += 'Model confidence: ' + m.conf + '<br>';
+        if (m.vessel_name) {{
+          html += 'Vessel name: <b>' + m.vessel_name + '</b><br>';
+        }}
+        html += 'MMSI: ' + m.mmsi + '<br>';
+        html += 'AIS distance: ' + (m.dist !== null ? m.dist + 'm' : '?');
+      }}
+      L.circleMarker([m.lat, m.lon], {{
+        radius: 8, color: m.color, fillColor: m.color,
+        fillOpacity: 0.8, weight: 2
+      }}).addTo(map).bindPopup(html, {{maxWidth: 300}});
+    }});
   </script>
 </body>
 </html>"""
