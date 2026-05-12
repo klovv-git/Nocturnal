@@ -72,17 +72,19 @@ def main():
     dark    = [d for d in dets if d[4] == 1]
     matched = [d for d in dets if d[4] == 0]
 
-    # get t_mid from first detection
-    t_mid_row = conn.execute(
-        "SELECT t_mid FROM detections WHERE scene_name = ? AND t_mid IS NOT NULL LIMIT 1",
-        (args.scene,)
-    ).fetchone()
-
-    if not t_mid_row:
-        print("No t_mid found for this scene — cannot query AIS snapshot.")
+    # calculate t_mid from the two timestamps in the scene name
+    # e.g. S1D_..._20260512T061448_20260512T061513_...
+    import datetime, calendar
+    ts_matches = re.findall(r'_(\d{8}T\d{6})_', args.scene)
+    if len(ts_matches) < 2:
+        print("Could not parse start/end time from scene name.")
         return
-
-    t_mid = t_mid_row[0]
+    def parse_ts(s):
+        dt = datetime.datetime.strptime(s, "%Y%m%dT%H%M%S")
+        return calendar.timegm(dt.timetuple())
+    t_start = parse_ts(ts_matches[0])
+    t_end   = parse_ts(ts_matches[1])
+    t_mid   = (t_start + t_end) / 2
     t_lo  = t_mid - args.window
     t_hi  = t_mid + args.window
 
