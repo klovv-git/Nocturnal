@@ -1,19 +1,23 @@
 #!/usr/bin/env python3
 """
 ais_reappearance.py — for each dark vessel detection, search the AIS database
-for vessels that appear in the vicinity AFTER the satellite pass but had no
-signal near that location before it.
+for vessels that appear in the vicinity AFTER the satellite pass.
 
-A vessel that was dark at t_mid but reappears on AIS shortly after may have
-turned its transponder back on — making it a strong candidate for the dark
-detection.
+For each candidate, the vessel's position at t_mid is INTERPOLATED from its
+surrounding pings (last ping before + first ping after). This separates two
+very different situations:
+
+  MISSED MATCH  — vessel was broadcasting and physically at the detection
+                  location at t_mid, but Phase 4 didn't catch it. The dark
+                  detection is actually a known ship.
+
+  REAPPEARANCE  — vessel was NOT near the detection at t_mid (it was
+                  elsewhere or silent), but showed up nearby afterwards.
+                  This is a genuine candidate for a vessel that turned
+                  its AIS back on.
 
 Usage:
     python ais_reappearance.py --scene <SAFE folder name>
-
-Output:
-    Console table of candidate reappearances, sorted by detection ID and
-    time of first reappearance.
 """
 
 import argparse
@@ -24,15 +28,15 @@ import sqlite3
 import calendar
 from pathlib import Path
 
-DEFAULT_DB   = Path("ais_memory.db")
-MAX_SPEED_KT = 25       # knots — maximum plausible vessel speed for radius calc
-QUIET_KM     = 50       # km — if a vessel had a ping within this radius BEFORE
-                         #       t_mid it is NOT a reappearance (it was already there)
-QUIET_HOURS  = 2        # hours before t_mid to check for prior presence
+DEFAULT_DB       = Path("ais_memory.db")
+MAX_SPEED_KT     = 25    # knots — expanding radius cap
+SEARCH_HOURS     = 1     # hours after t_mid to search
+INTERP_HOURS     = 3     # hours either side of t_mid to find surrounding pings
+MISSED_MATCH_KM  = 2.0   # km — interpolated position this close = missed match
+REAPPEAR_KM      = 30.0  # km — reappearance search radius after t_mid
 
 
 def haversine_km(lat1, lon1, lat2, lon2):
-    """Great-circle distance in kilometres."""
     R = 6371.0
     p1, p2 = math.radians(lat1), math.radians(lat2)
     dp = math.radians(lat2 - lat1)
@@ -42,7 +46,6 @@ def haversine_km(lat1, lon1, lat2, lon2):
 
 
 def bbox(lat, lon, km):
-    """Return a (lat_min, lat_max, lon_min, lon_max) bounding box."""
     dlat = km / 111.0
     dlon = km / (111.0 * math.cos(math.radians(lat)))
     return lat - dlat, lat + dlat, lon - dlon, lon + dlon
@@ -59,29 +62,40 @@ def parse_scene_time(scene_name):
 
 
 def fmt_ts(ts):
+    return datetime.datetime.utcfromtimestamp(ts).strftime("%H:%M UTC")
+
+
+def fmt_ts_full(ts):
     return datetime.datetime.utcfromtimestamp(ts).strftime("%Y-%m-%d %H:%M UTC")
 
 
-def fmt_bearing(lat1, lon1, lat2, lon2):
-    """Compass bearing from point 1 to point 2."""
-    dlon = math.radians(lon2 - lon1)
-    y = math.sin(dlon) * math.cos(math.radians(lat2))
-    x = (math.cos(math.radians(lat1)) * math.sin(math.radians(lat2))
-         - math.sin(math.radians(lat1)) * math.cos(math.radians(lat2)) * math.cos(dlon))
-    b = math.degrees(math.atan2(y, x))
-    return (b + 360) % 360
+def interpolate_position(pings_before, pings_after, t_mid):
+    """
+    Given sorted lists of (ts, lat, lon) before and after t_mid,
+    return the interpolated (lat, lon) at t_mid, or None if not possible.
+    """
+    if not pings_before or not pings_after:
+        return None
+    a = pings_before[-1]   # last ping before t_mid
+    b = pings_after[0]     # first ping after t_mid
+    if b[0] == a[0]:
+        return a[1], a[2]
+    frac = (t_mid - a[0]) / (b[0] - a[0])
+    lat  = a[1] + frac * (b[1] - a[1])
+    lon  = a[2] + frac * (b[2] - a[2])
+    return lat, lon
 
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--scene",   required=True)
-    ap.add_argument("--db",      default=str(DEFAULT_DB))
-    ap.add_argument("--hours",   type=float, default=6,
-                    help="Hours after t_mid to search for reappearances")
-    ap.add_argument("--speed",   type=float, default=MAX_SPEED_KT,
-                    help="Max vessel speed in knots for expanding radius")
-    ap.add_argument("--quiet-km", type=float, default=QUIET_KM,
-                    help="Radius (km) within which a prior AIS ping disqualifies a vessel")
+    ap.add_argument("--scene",        required=True)
+    ap.add_argument("--db",           default=str(DEFAULT_DB))
+    ap.add_argument("--hours",        type=float, default=SEARCH_HOURS,
+                    help="Hours after t_mid to search")
+    ap.add_argument("--missed-km",    type=float, default=MISSED_MATCH_KM,
+                    help="Interpolated distance threshold for missed match (km)")
+    ap.add_argument("--reappear-km",  type=float, default=REAPPEAR_KM,
+                    help="Search radius for reappearances (km)")
     args = ap.parse_args()
 
     conn = sqlite3.connect(args.db)
@@ -89,17 +103,17 @@ def main():
     t_start, t_end = parse_scene_time(args.scene)
     if not t_start:
         raise SystemExit("Could not parse scene timestamps.")
-    t_mid   = (t_start + t_end) / 2
-    t_after = t_mid + args.hours * 3600
-    t_quiet = t_mid - QUIET_HOURS * 3600
+    t_mid    = (t_start + t_end) / 2
+    t_after  = t_mid + args.hours * 3600
+    t_interp = INTERP_HOURS * 3600   # window to find surrounding pings
 
-    print(f"\nNOCTURNAL — AIS Reappearance Analysis")
-    print(f"Scene   : {args.scene[:60]}")
-    print(f"t_mid   : {fmt_ts(t_mid)}")
-    print(f"Window  : {fmt_ts(t_mid)} → {fmt_ts(t_after)}")
-    print(f"Max speed: {args.speed} kt   Quiet radius: {args.quiet_km} km")
+    print(f"\nNOCTURNAL — AIS Reappearance Analysis (with trajectory interpolation)")
+    print(f"Scene  : {args.scene[:60]}")
+    print(f"t_mid  : {fmt_ts_full(t_mid)}")
+    print(f"Window : {fmt_ts_full(t_mid)} → {fmt_ts_full(t_after)}")
+    print(f"Missed match threshold : {args.missed_km} km")
+    print(f"Reappearance radius    : {args.reappear_km} km\n")
 
-    # load dark detections for this scene
     dark = conn.execute(
         """SELECT id, lat, lon, confidence
            FROM detections
@@ -110,15 +124,13 @@ def main():
     if not dark:
         raise SystemExit("No dark detections found for this scene.")
 
-    print(f"\n{len(dark)} dark detection(s) to analyse\n")
+    print(f"{len(dark)} dark detection(s) to analyse\n")
 
-    # vessel name lookup
     vessel_names = {}
     for row in conn.execute("SELECT mmsi, name FROM vessels").fetchall():
         if row[1]:
             vessel_names[row[0]] = row[1].strip()
 
-    # get MMSIs that were matched (already confirmed AIS vessels — exclude them)
     matched_mmsis = set(
         r[0] for r in conn.execute(
             "SELECT matched_mmsi FROM detections WHERE scene_name = ? AND dark = 0",
@@ -126,14 +138,13 @@ def main():
         ).fetchall() if r[0]
     )
 
-    all_results = []
+    missed_matches  = []
+    reappearances   = []
 
     for det_id, det_lat, det_lon, conf in dark:
 
-        # --- step 1: find candidate MMSIs that appear AFTER t_mid ---
-        # use an expanding bounding box: max distance = elapsed_time * max_speed
-        max_km_after = (args.hours * 3600 * args.speed * 1852) / 1000  # km
-        la_min, la_max, lo_min, lo_max = bbox(det_lat, det_lon, max_km_after)
+        # find all vessels within reappear_km that appear AFTER t_mid
+        la_min, la_max, lo_min, lo_max = bbox(det_lat, det_lon, args.reappear_km)
 
         after_rows = conn.execute(
             """SELECT mmsi, lat, lon, ts_epoch
@@ -145,83 +156,146 @@ def main():
             (t_mid, t_after, la_min, la_max, lo_min, lo_max)
         ).fetchall()
 
-        # group by MMSI, keep first ping after t_mid
+        # keep first ping after t_mid per MMSI, within speed-expanding radius
         first_after = {}
         for mmsi, lat, lon, ts in after_rows:
             if mmsi in matched_mmsis:
                 continue
             dt_sec = ts - t_mid
-            max_km = (dt_sec * args.speed * 1852) / 3600 / 1000
+            max_km = (dt_sec * MAX_SPEED_KT * 1852) / 3600 / 1000
             dist   = haversine_km(det_lat, det_lon, lat, lon)
             if dist > max_km:
-                continue   # too far given time elapsed and max speed
+                continue
             if mmsi not in first_after or ts < first_after[mmsi][0]:
                 first_after[mmsi] = (ts, lat, lon, dist)
 
         if not first_after:
             continue
 
-        # --- step 2: disqualify MMSIs that had a ping near the detection BEFORE t_mid ---
-        lb_min, lb_max, lo2_min, lo2_max = bbox(det_lat, det_lon, args.quiet_km)
-        before_rows = conn.execute(
-            """SELECT DISTINCT mmsi
-               FROM positions
-               WHERE ts_epoch BETWEEN ? AND ?
-                 AND lat BETWEEN ? AND ?
-                 AND lon BETWEEN ? AND ?""",
-            (t_quiet, t_mid, lb_min, lb_max, lo2_min, lo2_max)
-        ).fetchall()
-        present_before = set(r[0] for r in before_rows)
+        # for each candidate, interpolate position at t_mid
+        for mmsi, (ts_after, lat_after, lon_after, dist_after) in first_after.items():
+            name = vessel_names.get(mmsi, "Unknown")
 
-        candidates = {
-            mmsi: data
-            for mmsi, data in first_after.items()
-            if mmsi not in present_before
-        }
+            # get pings surrounding t_mid for this vessel
+            surrounding = conn.execute(
+                """SELECT ts_epoch, lat, lon FROM positions
+                   WHERE mmsi = ?
+                     AND ts_epoch BETWEEN ? AND ?
+                   ORDER BY ts_epoch""",
+                (mmsi, t_mid - t_interp, t_mid + t_interp)
+            ).fetchall()
 
-        if not candidates:
-            continue
+            pings_before = [(r[0], r[1], r[2]) for r in surrounding if r[0] < t_mid]
+            pings_after  = [(r[0], r[1], r[2]) for r in surrounding if r[0] >= t_mid]
 
-        # sort by time of reappearance
-        for mmsi, (ts, lat, lon, dist) in sorted(candidates.items(), key=lambda x: x[1][0]):
-            dt_min  = (ts - t_mid) / 60
-            bearing = fmt_bearing(det_lat, det_lon, lat, lon)
-            name    = vessel_names.get(mmsi, "Unknown")
-            all_results.append({
-                "det_id":  det_id,
-                "det_lat": det_lat,
-                "det_lon": det_lon,
-                "conf":    conf,
-                "mmsi":    mmsi,
-                "name":    name,
-                "ts":      ts,
-                "lat":     lat,
-                "lon":     lon,
-                "dist_km": dist,
-                "dt_min":  dt_min,
-                "bearing": bearing,
-            })
+            interp = interpolate_position(pings_before, pings_after, t_mid)
 
-    # --- print results ---
-    if not all_results:
-        print("No reappearances found.")
-        return
+            if interp:
+                interp_lat, interp_lon = interp
+                interp_dist = haversine_km(det_lat, det_lon, interp_lat, interp_lon)
+                ping_before = pings_before[-1] if pings_before else None
+                ping_after_ = pings_after[0]   if pings_after  else None
+                gap_min = ((ping_after_[0] - ping_before[0]) / 60
+                           if ping_before and ping_after_ else None)
 
-    print(f"{'Det':>4}  {'Conf':>4}  {'MMSI':>12}  {'Vessel name':<22}  "
-          f"{'After':>6}  {'Dist':>7}  {'Brg':>4}  {'Reappeared at'}")
-    print("-" * 100)
+                if interp_dist <= args.missed_km:
+                    # vessel was AT the detection at t_mid — missed AIS match
+                    missed_matches.append({
+                        "det_id":      det_id,
+                        "det_lat":     det_lat,
+                        "det_lon":     det_lon,
+                        "conf":        conf,
+                        "mmsi":        mmsi,
+                        "name":        name,
+                        "interp_dist": interp_dist,
+                        "interp_lat":  interp_lat,
+                        "interp_lon":  interp_lon,
+                        "gap_min":     gap_min,
+                        "ping_before": ping_before,
+                        "ping_after":  ping_after_,
+                    })
+                else:
+                    # vessel was elsewhere at t_mid — genuine reappearance candidate
+                    reappearances.append({
+                        "det_id":      det_id,
+                        "det_lat":     det_lat,
+                        "det_lon":     det_lon,
+                        "conf":        conf,
+                        "mmsi":        mmsi,
+                        "name":        name,
+                        "ts":          ts_after,
+                        "dist_after":  dist_after,
+                        "dt_min":      (ts_after - t_mid) / 60,
+                        "interp_dist": interp_dist,
+                        "interp_lat":  interp_lat,
+                        "interp_lon":  interp_lon,
+                        "gap_min":     gap_min,
+                        "ping_before": ping_before,
+                        "ping_after":  ping_after_,
+                    })
+            else:
+                # no surrounding pings — vessel appeared with no prior track
+                reappearances.append({
+                    "det_id":      det_id,
+                    "det_lat":     det_lat,
+                    "det_lon":     det_lon,
+                    "conf":        conf,
+                    "mmsi":        mmsi,
+                    "name":        name,
+                    "ts":          ts_after,
+                    "dist_after":  dist_after,
+                    "dt_min":      (ts_after - t_mid) / 60,
+                    "interp_dist": None,
+                    "interp_lat":  None,
+                    "interp_lon":  None,
+                    "gap_min":     None,
+                    "ping_before": None,
+                    "ping_after":  None,
+                })
 
-    for r in sorted(all_results, key=lambda x: (x["det_id"], x["dt_min"])):
-        print(f"{r['det_id']:>4}  {r['conf']:>4.2f}  {r['mmsi']:>12}  "
-              f"{r['name']:<22.22}  "
-              f"{r['dt_min']:>5.0f}m  {r['dist_km']:>6.1f}km  "
-              f"{r['bearing']:>4.0f}°  "
-              f"{fmt_ts(r['ts'])}  ({r['lat']:.4f}N, {r['lon']:.4f}E)")
+    # --- MISSED MATCHES ---
+    print("=" * 80)
+    print("MISSED AIS MATCHES")
+    print("Vessels that WERE at the detection location at t_mid (broadcasting,")
+    print("but not caught by Phase 4). These dark detections are actually known ships.")
+    print("=" * 80)
+    if missed_matches:
+        print(f"\n{'Det':>4}  {'Conf':>4}  {'MMSI':>12}  {'Vessel name':<22}  "
+              f"{'InterpDist':>10}  {'AIS gap':>7}  Last ping → Next ping")
+        print("-" * 95)
+        for r in sorted(missed_matches, key=lambda x: (x["det_id"], x["interp_dist"])):
+            pb = fmt_ts(r["ping_before"][0]) if r["ping_before"] else "?"
+            pa = fmt_ts(r["ping_after"][0])  if r["ping_after"]  else "?"
+            gap = f"{r['gap_min']:.0f}m" if r["gap_min"] else "?"
+            print(f"{r['det_id']:>4}  {r['conf']:>4.2f}  {r['mmsi']:>12}  "
+                  f"{r['name']:<22.22}  {r['interp_dist']:>9.2f}km  "
+                  f"{gap:>7}  {pb} → {pa}")
+    else:
+        print("  None found.\n")
 
-    print(f"\nTotal candidates: {len(all_results)} across {len(set(r['det_id'] for r in all_results))} detection(s)")
-    print("\nNote: these are vessels with NO prior AIS signal near the detection")
-    print("location that appeared within plausible sailing distance after the pass.")
-    print("Shorter reappearance time and smaller distance = stronger candidate.")
+    # --- REAPPEARANCES ---
+    print()
+    print("=" * 80)
+    print("GENUINE REAPPEARANCE CANDIDATES")
+    print("Vessels that were NOT at the detection location at t_mid but appeared")
+    print("nearby afterwards. May have turned AIS back on after the pass.")
+    print("=" * 80)
+    if reappearances:
+        print(f"\n{'Det':>4}  {'Conf':>4}  {'MMSI':>12}  {'Vessel name':<22}  "
+              f"{'After':>6}  {'Dist':>7}  {'InterpDist':>10}  {'AIS gap':>7}")
+        print("-" * 100)
+        for r in sorted(reappearances, key=lambda x: (x["det_id"], x["dt_min"])):
+            id_str = f"{r['interp_dist']:.1f}km" if r["interp_dist"] else "no prior"
+            gap    = f"{r['gap_min']:.0f}m"       if r["gap_min"]     else "no prior"
+            print(f"{r['det_id']:>4}  {r['conf']:>4.2f}  {r['mmsi']:>12}  "
+                  f"{r['name']:<22.22}  "
+                  f"{r['dt_min']:>5.0f}m  {r['dist_after']:>6.1f}km  "
+                  f"{id_str:>10}  {gap:>7}")
+    else:
+        print("  None found.\n")
+
+    print(f"\nSummary: {len(missed_matches)} missed match(es), "
+          f"{len(reappearances)} reappearance candidate(s)")
 
 
 if __name__ == "__main__":
