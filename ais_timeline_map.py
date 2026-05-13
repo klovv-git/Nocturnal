@@ -313,6 +313,19 @@ def main():
     return trail;
   }}
 
+  // tracking selected vessel
+  var selectedMmsi = null;
+
+  function selectVessel(mmsi) {{
+    // deselect if clicking the same one
+    if (selectedMmsi === mmsi) {{
+      selectedMmsi = null;
+    }} else {{
+      selectedMmsi = mmsi;
+    }}
+    update();
+  }}
+
   // pre-build marker objects
   var vesselMarkers = {{}};
   var vesselTrails  = {{}};
@@ -326,6 +339,12 @@ def main():
       '<a href="https://www.marinetraffic.com/en/ais/details/ships/mmsi:' +
       t.mmsi + '" target="_blank">' + t.mmsi + ' ↗</a>';
     marker.bindPopup(label, {{maxWidth: 250}});
+    marker.on('click', (function(mmsi) {{
+      return function(e) {{
+        L.DomEvent.stopPropagation(e);
+        selectVessel(mmsi);
+      }};
+    }})(t.mmsi));
     vesselMarkers[t.mmsi] = {{ marker: marker, pings: t.pings }};
 
     var trail = L.polyline([], {{color:'#3498db', weight:1.5, opacity:0.4}});
@@ -407,22 +426,33 @@ def main():
 
     aisGroup.clearLayers();
 
+    var followPos = null;
     if (document.getElementById('tog-ais').checked) {{
       tracks.forEach(function(tr) {{
         var pos = getPos(tr.pings, t);
         if (!pos) return;
+        var isSelected = (tr.mmsi === selectedMmsi);
+        var color = isSelected ? '#9b59b6' : '#3498db';
+        var radius = isSelected ? 9 : 5;
         var marker = vesselMarkers[tr.mmsi].marker;
         marker.setLatLng(pos);
+        marker.setStyle({{
+          color: color, fillColor: color,
+          radius: radius, weight: isSelected ? 3 : 1.5
+        }});
         aisGroup.addLayer(marker);
+        if (isSelected) followPos = pos;
 
         var trail = getTrail(tr.pings, t);
         if (trail.length > 1) {{
           var line = vesselTrails[tr.mmsi];
           line.setLatLngs(trail);
+          line.setStyle({{color: color, weight: isSelected ? 2.5 : 1.5, opacity: isSelected ? 0.8 : 0.4}});
           aisGroup.addLayer(line);
         }}
       }});
     }}
+    if (followPos) map.panTo(followPos, {{animate: true, duration: 0.3}});
   }}
 
   slider.addEventListener('input', update);
