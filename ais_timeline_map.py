@@ -340,10 +340,7 @@ def main():
       t.mmsi + '" target="_blank">' + t.mmsi + ' ↗</a>';
     marker.bindPopup(label, {{maxWidth: 250}});
     marker.on('click', (function(mmsi) {{
-      return function(e) {{
-        L.DomEvent.stopPropagation(e);
-        selectVessel(mmsi);
-      }};
+      return function() {{ selectVessel(mmsi); }};
     }})(t.mmsi));
     vesselMarkers[t.mmsi] = {{ marker: marker, pings: t.pings }};
 
