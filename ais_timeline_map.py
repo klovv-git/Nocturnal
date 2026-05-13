@@ -331,15 +331,22 @@ def main():
       radius: 8, color: '#e74c3c', fillColor: '#e74c3c',
       fillOpacity: 0.9, weight: 2
     }});
+    var chipId = 'chip-' + d.id;
     var chipHtml = d.chip
-      ? '<br><img src="data:image/png;base64,' + d.chip +
-        '" style="width:640px;height:640px;margin-top:8px;image-rendering:pixelated;border:1px solid #ccc;">'
+      ? '<br><div style="margin-top:8px;">' +
+        '<button onclick="var i=document.getElementById(\'' + chipId + '\');i.style.width=(parseInt(i.style.width)-64)+\'px\';i.style.height=i.style.width;" ' +
+        'style="padding:2px 8px;cursor:pointer;font-size:13px;">−</button>' +
+        ' <button onclick="var i=document.getElementById(\'' + chipId + '\');i.style.width=(parseInt(i.style.width)+64)+\'px\';i.style.height=i.style.width;" ' +
+        'style="padding:2px 8px;cursor:pointer;font-size:13px;">+</button>' +
+        '<br><img id="' + chipId + '" src="data:image/png;base64,' + d.chip +
+        '" style="width:256px;height:256px;margin-top:6px;image-rendering:pixelated;border:1px solid #ccc;display:block;">'  +
+        '</div>'
       : '';
     m.bindPopup('<b>DARK VESSEL CANDIDATE</b><br>ID: ' + d.id +
       '<br>Confidence: ' + d.conf +
       '<br>Satellite: ' + det.time +
       '<br>No AIS signal within 1km/30min' + chipHtml,
-      {{maxWidth: 660}});
+      {{maxWidth: 700}});
     radarGroup.addLayer(m);
   }});
   det.matched.forEach(function(d) {{
