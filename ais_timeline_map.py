@@ -317,13 +317,17 @@ def main():
   var selectedMmsi = null;
 
   function selectVessel(mmsi) {{
-    // deselect if clicking the same one
     if (selectedMmsi === mmsi) {{
       selectedMmsi = null;
+      update();
     }} else {{
       selectedMmsi = mmsi;
+      update();
+      // re-open popup after update() re-adds the marker
+      if (vesselMarkers[mmsi]) {{
+        vesselMarkers[mmsi].marker.openPopup();
+      }}
     }}
-    update();
   }}
 
   // pre-build marker objects
