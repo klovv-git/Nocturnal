@@ -169,7 +169,7 @@ def main():
   <style>
     * {{ box-sizing: border-box; margin: 0; padding: 0; }}
     body {{ font-family: Arial, sans-serif; display: flex; flex-direction: column; height: 100vh; }}
-    #map {{ flex: 1; }}
+    #map {{ flex: 1; height: 100%; width: 100%; }}
 
     /* timeline bar */
     #timeline-bar {{
@@ -228,7 +228,7 @@ def main():
   </style>
 </head>
 <body>
-  <div style="position:relative; flex:1;">
+  <div style="position:relative; flex:1; min-height:0;">
     <div id="title">NOCTURNAL — Maritime Timeline</div>
     <div id="map"></div>
     <div id="layer-toggle">
