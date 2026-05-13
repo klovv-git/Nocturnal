@@ -56,7 +56,23 @@ def main():
                     help="Total time window to show (hours, centred on satellite pass)")
     ap.add_argument("--thin",   type=int, default=5,
                     help="Keep one AIS ping per vessel per N minutes")
+    ap.add_argument("--sar-overlay", type=Path, default=None,
+                    help="Path to sar_overlay_YYYYMMDD.png (from extract_sar_overlay.py)")
     args = ap.parse_args()
+
+    # load SAR overlay if provided
+    sar_b64    = None
+    sar_bounds = None
+    if args.sar_overlay and args.sar_overlay.exists():
+        sar_b64 = base64.b64encode(args.sar_overlay.read_bytes()).decode("ascii")
+        bounds_file = args.sar_overlay.with_suffix(".json")
+        if bounds_file.exists():
+            import json as _json
+            sar_bounds = _json.loads(bounds_file.read_text())
+            print(f"SAR overlay : {args.sar_overlay.name}")
+        else:
+            print(f"Warning: {bounds_file} not found — SAR overlay skipped.")
+            sar_b64 = None
 
     conn = sqlite3.connect(args.db)
 
@@ -104,11 +120,19 @@ def main():
             return None
         return base64.b64encode(fname.read_bytes()).decode("ascii")
 
-    # --- vessel names ---
-    vessel_names = {}
-    for row in conn.execute("SELECT mmsi, name FROM vessels").fetchall():
-        if row[1]:
-            vessel_names[row[0]] = row[1].strip()
+    # --- vessel info ---
+    vessel_info = {}
+    for row in conn.execute(
+        "SELECT mmsi, name, callsign, imo, ship_type FROM vessels"
+    ).fetchall():
+        mmsi, name, callsign, imo, ship_type = row
+        vessel_info[mmsi] = {
+            "name":      name.strip()      if name      else None,
+            "callsign":  callsign.strip()  if callsign  else None,
+            "imo":       imo               if imo       else None,
+            "ship_type": ship_type.strip() if ship_type else None,
+        }
+    vessel_names = {m: v["name"] for m, v in vessel_info.items() if v["name"]}
 
     # --- AIS tracks ---
     print(f"Querying AIS positions {fmt_time(t_lo)} → {fmt_time(t_hi)} ...")
@@ -144,10 +168,14 @@ def main():
     # build track data for JS
     tracks_js = []
     for mmsi, pings in tracks_clean.items():
+        info = vessel_info.get(mmsi, {})
         tracks_js.append({
-            "mmsi":  mmsi,
-            "name":  vessel_names.get(mmsi, None),
-            "pings": pings,   # [[ts, lat, lon], ...]
+            "mmsi":      mmsi,
+            "name":      info.get("name"),
+            "callsign":  info.get("callsign"),
+            "imo":       info.get("imo"),
+            "ship_type": info.get("ship_type"),
+            "pings":     pings,
         })
 
     # --- radar detections data ---
@@ -178,6 +206,27 @@ def main():
         "tracks":     tracks_js,
         "detections": detections_js,
     })
+
+    # SAR overlay JS
+    if sar_b64 and sar_bounds:
+        sar_js = f"""
+  var sarLayer = L.imageOverlay(
+    'data:image/png;base64,{sar_b64}',
+    [[{sar_bounds['lat_min']}, {sar_bounds['lon_min']}],
+     [{sar_bounds['lat_max']}, {sar_bounds['lon_max']}]],
+    {{opacity: 0.75}}
+  ).addTo(map);"""
+        sar_toggle = """<label><input type="checkbox" id="tog-sar" checked>
+        <span class="dot" style="background:#888;border-radius:2px"></span> SAR image</label>"""
+        sar_toggle_js = """
+  document.getElementById('tog-sar').addEventListener('change', function() {{
+    if (this.checked) map.addLayer(sarLayer); else map.removeLayer(sarLayer);
+  }});"""
+        sar_opacity = """<label style="margin-top:6px;display:flex;align-items:center;gap:6px;font-size:11px;color:#666">
+        Opacity <input type="range" min="0" max="1" step="0.05" value="0.75" style="width:80px"
+        oninput="sarLayer.setOpacity(this.value)"></label>"""
+    else:
+        sar_js = sar_toggle = sar_toggle_js = sar_opacity = ""
 
     html = f"""<!DOCTYPE html>
 <html>
@@ -257,6 +306,8 @@ def main():
         <span class="dot" style="background:#3498db"></span> AIS tracks</label>
       <label><input type="checkbox" id="tog-radar" checked>
         <span class="dot" style="background:#e74c3c"></span> Radar detections</label>
+      {sar_toggle}
+      {sar_opacity}
     </div>
   </div>
   <div id="timeline-bar">
@@ -276,6 +327,8 @@ def main():
   L.tileLayer('https://{{s}}.tile.openstreetmap.org/{{z}}/{{x}}/{{y}}.png', {{
     attribution: '© OpenStreetMap contributors'
   }}).addTo(map);
+
+  {sar_js}
 
   var aisGroup   = L.layerGroup().addTo(map);
   var radarGroup = L.layerGroup().addTo(map);
@@ -339,10 +392,13 @@ def main():
       radius: 5, color: '#3498db', fillColor: '#3498db',
       fillOpacity: 0.85, weight: 1.5
     }});
-    var label = '<b>' + (t.name || 'Unknown') + '</b><br>MMSI: ' +
-      '<a href="https://www.marinetraffic.com/en/ais/details/ships/mmsi:' +
+    var label = '<b>' + (t.name || 'Unknown vessel') + '</b><br>' +
+      'MMSI: <a href="https://www.marinetraffic.com/en/ais/details/ships/mmsi:' +
       t.mmsi + '" target="_blank">' + t.mmsi + ' ↗</a>';
-    marker.bindPopup(label, {{maxWidth: 250}});
+    if (t.ship_type) label += '<br>Type: ' + t.ship_type;
+    if (t.callsign)  label += '<br>Callsign: ' + t.callsign;
+    if (t.imo)       label += '<br>IMO: ' + t.imo;
+    marker.bindPopup(label, {{maxWidth: 280}});
     marker.on('click', (function(mmsi) {{
       return function() {{ selectVessel(mmsi); }};
     }})(t.mmsi));
@@ -492,6 +548,8 @@ def main():
     img.style.width  = w + 'px';
     img.style.height = w + 'px';
   }}
+
+  {sar_toggle_js}
 
   // initialise at satellite pass time
   slider.value = Math.round(satFrac * 1000);
