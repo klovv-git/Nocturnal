@@ -39,12 +39,14 @@ DB_MAX    =   5.0  # dB clip high (bright ship return)
 
 
 def dn_to_u8(dn: np.ndarray) -> np.ndarray:
-    """Convert raw DN array to sigma0 dB, clip, and normalise to uint8."""
-    # sigma0 ∝ DN² (calibration constant omitted — fine for display)
-    sigma0_db = 10.0 * np.log10(np.maximum(dn.astype(np.float32) ** 2, 1e-10))
-    clipped   = np.clip(sigma0_db, DB_MIN, DB_MAX)
-    normed    = (clipped - DB_MIN) / (DB_MAX - DB_MIN)
-    return (normed * 255).astype(np.uint8)
+    """Convert raw DN array to uint8 for display."""
+    arr = dn.astype(np.float32)
+    # use log stretch on raw DN — handles both uint16 range and float range
+    arr = np.log1p(np.maximum(arr, 0))
+    p2, p98 = np.percentile(arr[arr > 0], (2, 98)) if np.any(arr > 0) else (0, 1)
+    arr = np.clip(arr, p2, p98)
+    arr = (arr - p2) / max(p98 - p2, 1e-6)
+    return (arr * 255).astype(np.uint8)
 
 
 def main():
