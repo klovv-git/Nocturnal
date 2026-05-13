@@ -18,6 +18,14 @@ very different situations:
 
 Usage:
     python ais_reappearance.py --scene <SAFE folder name>
+
+Filtering reappearance candidates:
+    --no-prior-only          Only show vessels with no AIS history around t_mid
+    --min-interp-km <float>  Only show vessels whose interpolated position was
+                             at least this far from the detection (default: 0)
+                             Useful to exclude vessels that were just barely
+                             outside the missed-match threshold.
+    --min-conf <float>       Only analyse dark detections above this confidence
 """
 
 import argparse
@@ -96,6 +104,12 @@ def main():
                     help="Interpolated distance threshold for missed match (km)")
     ap.add_argument("--reappear-km",  type=float, default=REAPPEAR_KM,
                     help="Search radius for reappearances (km)")
+    ap.add_argument("--no-prior-only", action="store_true",
+                    help="Only show reappearance candidates with no AIS history around t_mid")
+    ap.add_argument("--min-interp-km", type=float, default=0.0,
+                    help="Only show reappearances whose interpolated position was >= this far (km)")
+    ap.add_argument("--min-conf",      type=float, default=0.0,
+                    help="Only analyse dark detections with confidence >= this value")
     args = ap.parse_args()
 
     conn = sqlite3.connect(args.db)
@@ -112,7 +126,14 @@ def main():
     print(f"t_mid  : {fmt_ts_full(t_mid)}")
     print(f"Window : {fmt_ts_full(t_mid)} → {fmt_ts_full(t_after)}")
     print(f"Missed match threshold : {args.missed_km} km")
-    print(f"Reappearance radius    : {args.reappear_km} km\n")
+    print(f"Reappearance radius    : {args.reappear_km} km")
+    if args.no_prior_only:
+        print(f"Filter                 : no-prior vessels only")
+    if args.min_interp_km > 0:
+        print(f"Min interp distance    : {args.min_interp_km} km")
+    if args.min_conf > 0:
+        print(f"Min confidence         : {args.min_conf}")
+    print()
 
     dark = conn.execute(
         """SELECT id, lat, lon, confidence
@@ -120,6 +141,9 @@ def main():
            WHERE scene_name = ? AND dark = 1 AND lat IS NOT NULL""",
         (args.scene,)
     ).fetchall()
+
+    if args.min_conf > 0:
+        dark = [d for d in dark if d[3] >= args.min_conf]
 
     if not dark:
         raise SystemExit("No dark detections found for this scene.")
@@ -274,19 +298,27 @@ def main():
         print("  None found.\n")
 
     # --- REAPPEARANCES ---
+    # apply filters
+    displayed = reappearances
+    if args.no_prior_only:
+        displayed = [r for r in displayed if r["interp_dist"] is None]
+    if args.min_interp_km > 0:
+        displayed = [r for r in displayed
+                     if r["interp_dist"] is None or r["interp_dist"] >= args.min_interp_km]
+
     print()
     print("=" * 80)
     print("GENUINE REAPPEARANCE CANDIDATES")
     print("Vessels that were NOT at the detection location at t_mid but appeared")
     print("nearby afterwards. May have turned AIS back on after the pass.")
     print("=" * 80)
-    if reappearances:
+    if displayed:
         print(f"\n{'Det':>4}  {'Conf':>4}  {'MMSI':>12}  {'Vessel name':<22}  "
               f"{'After':>6}  {'Dist':>7}  {'InterpDist':>10}  {'AIS gap':>7}")
         print("-" * 100)
-        for r in sorted(reappearances, key=lambda x: (x["det_id"], x["dt_min"])):
-            id_str = f"{r['interp_dist']:.1f}km" if r["interp_dist"] else "no prior"
-            gap    = f"{r['gap_min']:.0f}m"       if r["gap_min"]     else "no prior"
+        for r in sorted(displayed, key=lambda x: (x["det_id"], x["dt_min"])):
+            id_str = f"{r['interp_dist']:.1f}km" if r["interp_dist"] is not None else "no prior"
+            gap    = f"{r['gap_min']:.0f}m"       if r["gap_min"]     is not None else "no prior"
             print(f"{r['det_id']:>4}  {r['conf']:>4.2f}  {r['mmsi']:>12}  "
                   f"{r['name']:<22.22}  "
                   f"{r['dt_min']:>5.0f}m  {r['dist_after']:>6.1f}km  "
@@ -294,8 +326,11 @@ def main():
     else:
         print("  None found.\n")
 
+    filter_note = ""
+    if len(displayed) < len(reappearances):
+        filter_note = f" ({len(reappearances) - len(displayed)} filtered out)"
     print(f"\nSummary: {len(missed_matches)} missed match(es), "
-          f"{len(reappearances)} reappearance candidate(s)")
+          f"{len(displayed)} reappearance candidate(s) shown{filter_note}")
 
 
 if __name__ == "__main__":
