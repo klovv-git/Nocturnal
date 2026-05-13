@@ -130,7 +130,7 @@ def main():
             "name":      name.strip()      if name      else None,
             "callsign":  callsign.strip()  if callsign  else None,
             "imo":       imo               if imo       else None,
-            "ship_type": ship_type.strip() if ship_type else None,
+            "ship_type": str(ship_type) if ship_type else None,
         }
     vessel_names = {m: v["name"] for m, v in vessel_info.items() if v["name"]}
 
