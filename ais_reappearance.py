@@ -26,6 +26,9 @@ Filtering reappearance candidates:
                              Useful to exclude vessels that were just barely
                              outside the missed-match threshold.
     --min-conf <float>       Only analyse dark detections above this confidence
+    --hide-transiting        Hide "no prior" vessels that had AIS pings elsewhere
+                             in the database before t_mid (i.e. were transiting
+                             into the scene, not turning AIS back on)
 """
 
 import argparse
@@ -77,6 +80,21 @@ def fmt_ts_full(ts):
     return datetime.datetime.utcfromtimestamp(ts).strftime("%Y-%m-%d %H:%M UTC")
 
 
+def last_global_ping_before(conn, mmsi, t_mid):
+    """
+    Check if this MMSI has ANY ping anywhere in the database before t_mid.
+    Returns (ts_epoch, lat, lon) of the most recent pre-t_mid ping, or None.
+    Used to distinguish 'vessel was dark' from 'vessel was transiting in'.
+    """
+    row = conn.execute(
+        """SELECT ts_epoch, lat, lon FROM positions
+           WHERE mmsi = ? AND ts_epoch < ?
+           ORDER BY ts_epoch DESC LIMIT 1""",
+        (mmsi, t_mid)
+    ).fetchone()
+    return row if row else None
+
+
 def interpolate_position(pings_before, pings_after, t_mid):
     """
     Given sorted lists of (ts, lat, lon) before and after t_mid,
@@ -110,6 +128,8 @@ def main():
                     help="Only show reappearances whose interpolated position was >= this far (km)")
     ap.add_argument("--min-conf",      type=float, default=0.0,
                     help="Only analyse dark detections with confidence >= this value")
+    ap.add_argument("--hide-transiting", action="store_true",
+                    help="Hide no-prior vessels that had AIS pings elsewhere before t_mid")
     args = ap.parse_args()
 
     conn = sqlite3.connect(args.db)
@@ -133,6 +153,8 @@ def main():
         print(f"Min interp distance    : {args.min_interp_km} km")
     if args.min_conf > 0:
         print(f"Min confidence         : {args.min_conf}")
+    if args.hide_transiting:
+        print(f"Hide transiting        : yes (no-prior vessels with prior pings elsewhere removed)")
     print()
 
     dark = conn.execute(
@@ -241,40 +263,54 @@ def main():
                 else:
                     # vessel was elsewhere at t_mid — genuine reappearance candidate
                     reappearances.append({
-                        "det_id":      det_id,
-                        "det_lat":     det_lat,
-                        "det_lon":     det_lon,
-                        "conf":        conf,
-                        "mmsi":        mmsi,
-                        "name":        name,
-                        "ts":          ts_after,
-                        "dist_after":  dist_after,
-                        "dt_min":      (ts_after - t_mid) / 60,
-                        "interp_dist": interp_dist,
-                        "interp_lat":  interp_lat,
-                        "interp_lon":  interp_lon,
-                        "gap_min":     gap_min,
-                        "ping_before": ping_before,
-                        "ping_after":  ping_after_,
+                        "det_id":       det_id,
+                        "det_lat":      det_lat,
+                        "det_lon":      det_lon,
+                        "conf":         conf,
+                        "mmsi":         mmsi,
+                        "name":         name,
+                        "ts":           ts_after,
+                        "dist_after":   dist_after,
+                        "dt_min":       (ts_after - t_mid) / 60,
+                        "interp_dist":  interp_dist,
+                        "interp_lat":   interp_lat,
+                        "interp_lon":   interp_lon,
+                        "gap_min":      gap_min,
+                        "ping_before":  ping_before,
+                        "ping_after":   ping_after_,
+                        "global_prior": True,   # has local pings, so definitely has prior
+                        "gp_dist":      None,
+                        "gp_age_min":   None,
                     })
             else:
-                # no surrounding pings — vessel appeared with no prior track
+                # no surrounding pings — check if vessel was broadcasting elsewhere
+                global_prior = last_global_ping_before(conn, mmsi, t_mid)
+                if global_prior:
+                    gp_ts, gp_lat, gp_lon = global_prior
+                    gp_dist = haversine_km(det_lat, det_lon, gp_lat, gp_lon)
+                    gp_age_min = (t_mid - gp_ts) / 60
+                else:
+                    gp_dist = gp_age_min = None
+
                 reappearances.append({
-                    "det_id":      det_id,
-                    "det_lat":     det_lat,
-                    "det_lon":     det_lon,
-                    "conf":        conf,
-                    "mmsi":        mmsi,
-                    "name":        name,
-                    "ts":          ts_after,
-                    "dist_after":  dist_after,
-                    "dt_min":      (ts_after - t_mid) / 60,
-                    "interp_dist": None,
-                    "interp_lat":  None,
-                    "interp_lon":  None,
-                    "gap_min":     None,
-                    "ping_before": None,
-                    "ping_after":  None,
+                    "det_id":       det_id,
+                    "det_lat":      det_lat,
+                    "det_lon":      det_lon,
+                    "conf":         conf,
+                    "mmsi":         mmsi,
+                    "name":         name,
+                    "ts":           ts_after,
+                    "dist_after":   dist_after,
+                    "dt_min":       (ts_after - t_mid) / 60,
+                    "interp_dist":  None,
+                    "interp_lat":   None,
+                    "interp_lon":   None,
+                    "gap_min":      None,
+                    "ping_before":  None,
+                    "ping_after":   None,
+                    "global_prior": global_prior,   # (ts, lat, lon) or None
+                    "gp_dist":      gp_dist,        # km from detection
+                    "gp_age_min":   gp_age_min,     # minutes before t_mid
                 })
 
     # --- MISSED MATCHES ---
@@ -305,6 +341,11 @@ def main():
     if args.min_interp_km > 0:
         displayed = [r for r in displayed
                      if r["interp_dist"] is None or r["interp_dist"] >= args.min_interp_km]
+    if args.hide_transiting:
+        # remove no-prior vessels that had AIS pings elsewhere before t_mid
+        displayed = [r for r in displayed
+                     if r["interp_dist"] is not None   # has local interp — keep
+                     or r["global_prior"] is None]      # truly no prior anywhere — keep
 
     print()
     print("=" * 80)
@@ -314,15 +355,23 @@ def main():
     print("=" * 80)
     if displayed:
         print(f"\n{'Det':>4}  {'Conf':>4}  {'MMSI':>12}  {'Vessel name':<22}  "
-              f"{'After':>6}  {'Dist':>7}  {'InterpDist':>10}  {'AIS gap':>7}")
-        print("-" * 100)
+              f"{'After':>6}  {'Dist':>7}  {'InterpDist':>10}  {'AIS gap':>7}  {'Prior elsewhere':>15}")
+        print("-" * 120)
         for r in sorted(displayed, key=lambda x: (x["det_id"], x["dt_min"])):
             id_str = f"{r['interp_dist']:.1f}km" if r["interp_dist"] is not None else "no prior"
             gap    = f"{r['gap_min']:.0f}m"       if r["gap_min"]     is not None else "no prior"
+            # prior elsewhere column
+            if r["interp_dist"] is not None:
+                # has local pings — was broadcasting nearby, not a transit case
+                prior_str = "—"
+            elif r["global_prior"] is None:
+                prior_str = "NO — truly dark"
+            else:
+                prior_str = f"yes ({r['gp_dist']:.0f}km, {r['gp_age_min']:.0f}m ago)"
             print(f"{r['det_id']:>4}  {r['conf']:>4.2f}  {r['mmsi']:>12}  "
                   f"{r['name']:<22.22}  "
                   f"{r['dt_min']:>5.0f}m  {r['dist_after']:>6.1f}km  "
-                  f"{id_str:>10}  {gap:>7}")
+                  f"{id_str:>10}  {gap:>7}  {prior_str}")
     else:
         print("  None found.\n")
 
