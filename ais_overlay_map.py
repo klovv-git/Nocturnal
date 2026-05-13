@@ -35,7 +35,27 @@ def main():
                     help="AIS time window in seconds either side of t_mid")
     ap.add_argument("--sh-id", default=SENTINEL_HUB_ID,
                     help="Sentinel Hub instance ID for Sentinel-2 WMS overlay")
+    ap.add_argument("--sar-overlay", type=Path, default=None,
+                    help="Path to sar_overlay_YYYYMMDD.png (from extract_sar_overlay.py)")
     args = ap.parse_args()
+
+    # load SAR overlay image if provided
+    sar_b64    = None
+    sar_bounds = None
+    if args.sar_overlay and args.sar_overlay.exists():
+        import base64
+        sar_b64 = base64.b64encode(args.sar_overlay.read_bytes()).decode("ascii")
+        bounds_file = args.sar_overlay.with_suffix(".json")
+        if bounds_file.exists():
+            import json as _json
+            sar_bounds = _json.loads(bounds_file.read_text())
+            print(f"SAR overlay : {args.sar_overlay.name}  "
+                  f"({args.sar_overlay.stat().st_size // 1024} KB)")
+        else:
+            print(f"Warning: bounds file {bounds_file} not found — SAR overlay skipped.")
+            sar_b64 = None
+    elif args.sar_overlay:
+        print(f"Warning: {args.sar_overlay} not found — SAR overlay skipped.")
 
     # parse scene date and time from scene name
     dt_match = re.search(r'_(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})(\d{2})_', args.scene)
@@ -182,6 +202,23 @@ def main():
     sh_wms_url = f"https://sh.dataspace.copernicus.eu/ogc/wms/{args.sh_id}"
     s2_time    = wms_date or "unknown"
 
+    # build SAR overlay JS snippet
+    if sar_b64 and sar_bounds:
+        sar_js = f"""
+    var sarImg = 'data:image/png;base64,{sar_b64}';
+    var sarBounds = [[{sar_bounds['lat_min']}, {sar_bounds['lon_min']}],
+                     [{sar_bounds['lat_max']}, {sar_bounds['lon_max']}]];
+    var sarLayer = L.imageOverlay(sarImg, sarBounds, {{opacity: 0.75}});"""
+        sar_layer_control = "'Sentinel-1 SAR (radar)': sarLayer,"
+        sar_opacity_block = """
+    <label>Sentinel-1 opacity</label>
+    <input type="range" min="0" max="1" step="0.05" value="0.75"
+           oninput="sarLayer.setOpacity(this.value)">"""
+    else:
+        sar_js             = ""
+        sar_layer_control  = ""
+        sar_opacity_block  = ""
+
     html = f"""<!DOCTYPE html>
 <html>
 <head>
@@ -217,8 +254,8 @@ def main():
       box-shadow: 0 2px 8px rgba(0,0,0,0.3); font-size: 12px;
       display: none;
     }}
-    #s2-controls label {{ display: block; margin-bottom: 4px; color: #555; }}
-    #s2-opacity {{ width: 130px; }}
+    #s2-controls label {{ display: block; margin-bottom: 4px; color: #555; font-weight: bold; }}
+    #s2-controls input {{ width: 130px; display: block; margin-bottom: 8px; }}
   </style>
 </head>
 <body>
@@ -233,6 +270,7 @@ def main():
     <label>Sentinel-2 opacity</label>
     <input id="s2-opacity" type="range" min="0" max="1" step="0.05" value="0.8"
            oninput="s2Layer.setOpacity(this.value)">
+    {sar_opacity_block}
   </div>
   <script>
     // --- Base layers ---
@@ -249,6 +287,8 @@ def main():
       maxZoom:     18,
       tileSize:    512
     }});
+
+    {sar_js}
 
     var map = L.map('map', {{
       center: [{clat}, {clon}],
@@ -312,6 +352,7 @@ def main():
       'Sentinel-2 L2A (optical)': s2Layer
     }};
     var overlays = {{
+      {sar_layer_control}
       'AIS vessels':         aisGroup,
       'Dark detections':     darkGroup,
       'Matched detections':  matchedGroup
