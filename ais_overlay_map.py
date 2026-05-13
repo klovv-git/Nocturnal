@@ -20,10 +20,11 @@ import re
 import sqlite3
 from pathlib import Path
 
-DEFAULT_DB = Path("ais_memory.db")
-OUT_FILE   = Path("ais_overlay_map.html")
-AIS_WINDOW = 1800   # ±30 minutes in seconds
-BBOX_PAD   = 0.5    # degrees of padding around scene bounding box
+DEFAULT_DB       = Path("ais_memory.db")
+OUT_FILE         = Path("ais_overlay_map.html")
+AIS_WINDOW       = 1800   # ±30 minutes in seconds
+BBOX_PAD         = 0.5    # degrees of padding around scene bounding box
+SENTINEL_HUB_ID  = "5ba9f0a2-f8ce-4d7d-be53-f0f7c93510ac"
 
 
 def main():
@@ -32,6 +33,8 @@ def main():
     ap.add_argument("--db", default=str(DEFAULT_DB))
     ap.add_argument("--window", type=int, default=AIS_WINDOW,
                     help="AIS time window in seconds either side of t_mid")
+    ap.add_argument("--sh-id", default=SENTINEL_HUB_ID,
+                    help="Sentinel Hub instance ID for Sentinel-2 WMS overlay")
     args = ap.parse_args()
 
     # parse scene date and time from scene name
@@ -40,9 +43,11 @@ def main():
         y, mo, d, h, mi, s = dt_match.groups()
         scene_time = f"{y}-{mo}-{d} {h}:{mi}:{s} UTC"
         date_str   = f"{y}{mo}{d}"
+        wms_date   = f"{y}-{mo}-{d}/{y}-{mo}-{int(d)+1:02d}"
     else:
         scene_time = "unknown"
         date_str   = None
+        wms_date   = None
 
     # dark chips folder
     chips_dir = Path(f"dark_chips_{date_str}") if date_str else None
@@ -174,6 +179,9 @@ def main():
 
     markers_json = json.dumps(markers_data)
 
+    sh_wms_url = f"https://sh.dataspace.copernicus.eu/ogc/wms/{args.sh_id}"
+    s2_time    = wms_date or "unknown"
+
     html = f"""<!DOCTYPE html>
 <html>
 <head>
@@ -186,7 +194,7 @@ def main():
     body {{ margin: 0; font-family: Arial, sans-serif; }}
     #map {{ height: 100vh; }}
     #legend {{
-      position: absolute; bottom: 30px; right: 10px; z-index: 1000;
+      position: absolute; bottom: 30px; left: 10px; z-index: 1000;
       background: white; padding: 12px 16px; border-radius: 6px;
       box-shadow: 0 2px 8px rgba(0,0,0,0.3); font-size: 13px; line-height: 22px;
     }}
@@ -202,71 +210,118 @@ def main():
       display: block; width: 128px; height: 128px;
       margin-top: 8px; border: 1px solid #ccc;
     }}
+    /* opacity slider */
+    #s2-controls {{
+      position: absolute; top: 60px; right: 50px; z-index: 1000;
+      background: white; padding: 10px 14px; border-radius: 6px;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.3); font-size: 12px;
+      display: none;
+    }}
+    #s2-controls label {{ display: block; margin-bottom: 4px; color: #555; }}
+    #s2-opacity {{ width: 130px; }}
   </style>
 </head>
 <body>
   <div id="title">NOCTURNAL — Snapshot {scene_time}</div>
   <div id="map"></div>
   <div id="legend">
-    <div><span class="dot" style="background:#3498db"></span>AIS vessel at snapshot ({len(best)})</div>
+    <div><span class="dot" style="background:#3498db"></span>AIS vessel ({len(best)})</div>
     <div><span class="dot" style="background:#2ecc71"></span>Radar matched ({len(matched)})</div>
-    <div><span class="dot" style="background:#e74c3c"></span>Dark vessel candidate ({len(dark)})</div>
+    <div><span class="dot" style="background:#e74c3c"></span>Dark candidate ({len(dark)})</div>
+  </div>
+  <div id="s2-controls">
+    <label>Sentinel-2 opacity</label>
+    <input id="s2-opacity" type="range" min="0" max="1" step="0.05" value="0.8"
+           oninput="s2Layer.setOpacity(this.value)">
   </div>
   <script>
-    var map = L.map('map').setView([{clat}, {clon}], 9);
-    L.tileLayer('https://{{s}}.tile.openstreetmap.org/{{z}}/{{x}}/{{y}}.png', {{
+    // --- Base layers ---
+    var osmLayer = L.tileLayer('https://{{s}}.tile.openstreetmap.org/{{z}}/{{x}}/{{y}}.png', {{
       attribution: '© OpenStreetMap contributors'
-    }}).addTo(map);
+    }});
 
+    var s2Layer = L.tileLayer.wms('{sh_wms_url}', {{
+      layers:      'TRUE-COLOR',
+      format:      'image/jpeg',
+      transparent: false,
+      TIME:        '{s2_time}',
+      attribution: 'Sentinel-2 L2A © ESA / Copernicus',
+      maxZoom:     18,
+      tileSize:    512
+    }});
+
+    var map = L.map('map', {{
+      center: [{clat}, {clon}],
+      zoom:   9,
+      layers: [osmLayer]
+    }});
+
+    // --- Overlay layer groups ---
+    var aisGroup     = L.layerGroup().addTo(map);
+    var darkGroup    = L.layerGroup().addTo(map);
+    var matchedGroup = L.layerGroup().addTo(map);
+
+    // --- Markers ---
     var markers = {markers_json};
 
     markers.forEach(function(m) {{
-      var html, radius, opacity;
+      var html, radius, opacity, group;
 
       if (m.type === 'ais') {{
         radius  = 5;
         opacity = 0.5;
+        group   = aisGroup;
         html    = '<b>AIS VESSEL</b><br>';
-        if (m.name) {{
-          html += '<b>' + m.name + '</b><br>';
-        }}
-        html   += 'MMSI: <a href="' + m.link + '" target="_blank">' + m.mmsi + ' ↗</a><br>';
-        html   += 'Position at: ' + m.time + '<br>';
-        html   += '(broadcasting AIS)';
+        if (m.name) html += '<b>' + m.name + '</b><br>';
+        html += 'MMSI: <a href="' + m.link + '" target="_blank">' + m.mmsi + ' ↗</a><br>';
+        html += 'Position at: ' + m.time + '<br>(broadcasting AIS)';
       }} else if (m.type === 'dark') {{
         radius  = 9;
         opacity = 0.9;
+        group   = darkGroup;
         html    = '<b>DARK VESSEL CANDIDATE</b><br>';
         html   += 'Detection ID: ' + m.id + '<br>';
         html   += 'Position: ' + m.lat.toFixed(5) + 'N, ' + m.lon.toFixed(5) + 'E<br>';
         html   += 'Satellite pass: ' + m.time + '<br>';
         html   += 'Confidence: ' + m.conf + '<br>';
         html   += 'No AIS signal within 1km / 30min';
-        if (m.chip) {{
-          html += '<br><img class="popup-chip" src="data:image/png;base64,' + m.chip + '">';
-        }}
+        if (m.chip) html += '<br><img class="popup-chip" src="data:image/png;base64,' + m.chip + '">';
       }} else {{
         radius  = 9;
         opacity = 0.9;
+        group   = matchedGroup;
         html    = '<b>MATCHED VESSEL</b><br>';
         html   += 'Detection ID: ' + m.id + '<br>';
         html   += 'Position: ' + m.lat.toFixed(5) + 'N, ' + m.lon.toFixed(5) + 'E<br>';
         html   += 'Satellite pass: ' + m.time + '<br>';
         html   += 'Confidence: ' + m.conf + '<br>';
-        if (m.name) {{
-          html += 'Vessel: <b>' + m.name + '</b><br>';
-        }}
+        if (m.name) html += 'Vessel: <b>' + m.name + '</b><br>';
         html   += 'MMSI: <a href="' + m.link + '" target="_blank">' + m.mmsi + ' ↗</a><br>';
         html   += 'AIS distance: ' + (m.dist !== null ? m.dist + 'm' : '?');
       }}
 
       L.circleMarker([m.lat, m.lon], {{
-        radius:      radius,
-        color:       m.color,
-        fillColor:   m.color,
-        fillOpacity: opacity,
-        weight:      2
-      }}).addTo(map).bindPopup(html, {{maxWidth: 300}});
+        radius: radius, color: m.color, fillColor: m.color,
+        fillOpacity: opacity, weight: 2
+      }}).addTo(group).bindPopup(html, {{maxWidth: 300}});
+    }});
+
+    // --- Layer control ---
+    var baseLayers = {{
+      'OpenStreetMap':           osmLayer,
+      'Sentinel-2 L2A (optical)': s2Layer
+    }};
+    var overlays = {{
+      'AIS vessels':         aisGroup,
+      'Dark detections':     darkGroup,
+      'Matched detections':  matchedGroup
+    }};
+    L.control.layers(baseLayers, overlays, {{collapsed: false}}).addTo(map);
+
+    // Show opacity slider only when Sentinel-2 base layer is active
+    map.on('baselayerchange', function(e) {{
+      var ctrl = document.getElementById('s2-controls');
+      ctrl.style.display = (e.name === 'Sentinel-2 L2A (optical)') ? 'block' : 'none';
     }});
   </script>
 </body>
