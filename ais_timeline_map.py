@@ -156,12 +156,19 @@ def main():
         "t_mid":   t_mid,
         "time":    fmt_time(t_mid),
         "dark":    [{"id": d[0], "lat": d[1], "lon": d[2],
-                     "conf": round(d[3], 2),
-                     "chip": load_chip(d[0], d[1], d[2])} for d in dark_dets],
+                     "conf": round(d[3], 2)} for d in dark_dets],
         "matched": [{"id": d[0], "lat": d[1], "lon": d[2],
                      "conf": round(d[3], 2), "mmsi": d[5],
                      "name": vessel_names.get(d[5], None)} for d in matched_dets],
     }
+
+    # chips stored separately to avoid embedding large base64 in the main DATA object
+    chips = {}
+    for d in dark_dets:
+        chip = load_chip(d[0], d[1], d[2])
+        if chip:
+            chips[d[0]] = chip
+    chips_json = json.dumps(chips)
 
     data_json = json.dumps({
         "t_lo":       t_lo,
@@ -262,7 +269,8 @@ def main():
   </div>
 
   <script>
-  var DATA = {data_json};
+  var DATA  = {data_json};
+  var CHIPS = {chips_json};
 
   var map = L.map('map').setView([{clat}, {clon}], 9);
   L.tileLayer('https://{{s}}.tile.openstreetmap.org/{{z}}/{{x}}/{{y}}.png', {{
@@ -331,21 +339,19 @@ def main():
       radius: 8, color: '#e74c3c', fillColor: '#e74c3c',
       fillOpacity: 0.9, weight: 2
     }});
-    var chipId = 'chip-' + d.id;
-    var chipHtml = d.chip
-      ? '<br><div style="margin-top:8px;">' +
-        '<button onclick="var i=document.getElementById(\'' + chipId + '\');i.style.width=(parseInt(i.style.width)-64)+\'px\';i.style.height=i.style.width;" ' +
-        'style="padding:2px 8px;cursor:pointer;font-size:13px;">−</button>' +
-        ' <button onclick="var i=document.getElementById(\'' + chipId + '\');i.style.width=(parseInt(i.style.width)+64)+\'px\';i.style.height=i.style.width;" ' +
-        'style="padding:2px 8px;cursor:pointer;font-size:13px;">+</button>' +
-        '<br><img id="' + chipId + '" src="data:image/png;base64,' + d.chip +
-        '" style="width:256px;height:256px;margin-top:6px;image-rendering:pixelated;border:1px solid #ccc;display:block;">'  +
-        '</div>'
-      : '';
+    var chipB64 = CHIPS[d.id] || null;
+    var chipHtml = '';
+    if (chipB64) {{
+      chipHtml = '<br><div style="margin-top:8px">' +
+                 '<button onclick="nocResize(' + d.id + ',-64)" style="padding:2px 8px;cursor:pointer">&#8722;</button> ' +
+                 '<button onclick="nocResize(' + d.id + ',64)"  style="padding:2px 8px;cursor:pointer">+</button>' +
+                 '<br><img id="nchip' + d.id + '" src="data:image/png;base64,' + chipB64 + '" ' +
+                 'style="width:256px;height:256px;margin-top:6px;image-rendering:pixelated;border:1px solid #ccc;display:block"></div>';
+    }}
     m.bindPopup('<b>DARK VESSEL CANDIDATE</b><br>ID: ' + d.id +
       '<br>Confidence: ' + d.conf +
       '<br>Satellite: ' + det.time +
-      '<br>No AIS signal within 1km/30min' + chipHtml,
+      '<br>No AIS signal within 1km / 30min' + chipHtml,
       {{maxWidth: 700}});
     radarGroup.addLayer(m);
   }});
@@ -446,6 +452,15 @@ def main():
       clearInterval(playInterval);
     }}
   }});
+
+  // resize chip image
+  function nocResize(id, delta) {{
+    var img = document.getElementById('nchip' + id);
+    if (!img) return;
+    var w = Math.max(64, parseInt(img.style.width) + delta);
+    img.style.width  = w + 'px';
+    img.style.height = w + 'px';
+  }}
 
   // initialise at satellite pass time
   slider.value = Math.round(satFrac * 1000);
