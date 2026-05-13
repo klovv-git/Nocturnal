@@ -160,7 +160,8 @@ def main():
     dark = conn.execute(
         """SELECT id, lat, lon, confidence
            FROM detections
-           WHERE scene_name = ? AND dark = 1 AND lat IS NOT NULL""",
+           WHERE scene_name = ? AND dark = 1 AND lat IS NOT NULL
+             AND (false_positive IS NULL OR false_positive = 0)""",
         (args.scene,)
     ).fetchall()
 
