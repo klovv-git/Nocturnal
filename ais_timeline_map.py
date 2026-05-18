@@ -25,9 +25,10 @@ import datetime
 import calendar
 from pathlib import Path
 
-DEFAULT_DB = Path("ais_memory.db")
+from config import DB_PATH, TIMELINE_HOURS, THIN_MINUTES, BBOX_PAD
+
+DEFAULT_DB = DB_PATH
 OUT_FILE   = Path("ais_timeline_map.html")
-BBOX_PAD   = 1.0    # degrees padding around detections bounding box
 
 
 # ── helpers ───────────────────────────────────────────────────────────────────
@@ -744,9 +745,9 @@ def main():
                              help="One or more scene SAFE folder names")
 
     ap.add_argument("--db",       default=str(DEFAULT_DB))
-    ap.add_argument("--hours",    type=float, default=12,
+    ap.add_argument("--hours",    type=float, default=TIMELINE_HOURS,
                     help="Time window to show per scene (hours, centred on pass)")
-    ap.add_argument("--thin",     type=int, default=5,
+    ap.add_argument("--thin",     type=int, default=THIN_MINUTES,
                     help="Thin AIS pings to one per vessel per N minutes")
 
     # SAR overlay: single path (old) or directory (new multi-scene auto-detect)
