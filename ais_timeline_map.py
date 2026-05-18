@@ -808,11 +808,13 @@ def main():
         description="Generate an interactive multi-scene timeline map for NOCTURNAL"
     )
 
-    # accept either --scene (singular, backward-compat) or --scenes (plural)
+    # accept --scene / --scenes / --all
     scene_group = ap.add_mutually_exclusive_group(required=True)
     scene_group.add_argument("--scene",  help="Single scene (backward-compatible)")
     scene_group.add_argument("--scenes", nargs="+",
                              help="One or more scene SAFE folder names")
+    scene_group.add_argument("--all", action="store_true", dest="all_scenes",
+                             help="Auto-include every .SAFE folder in sentinel_data/")
 
     ap.add_argument("--db",       default=str(DEFAULT_DB))
     ap.add_argument("--hours",    type=float, default=TIMELINE_HOURS,
@@ -830,7 +832,12 @@ def main():
     args = ap.parse_args()
 
     # normalise to a list of scene names
-    if args.scene:
+    if args.all_scenes:
+        scene_list = sorted(p.name for p in SENTINEL_DATA_DIR.glob("*.SAFE"))
+        if not scene_list:
+            raise SystemExit(f"No .SAFE folders found in {SENTINEL_DATA_DIR}")
+        print(f"--all: found {len(scene_list)} scene(s) in {SENTINEL_DATA_DIR}")
+    elif args.scene:
         scene_list = [args.scene]
     else:
         scene_list = args.scenes
