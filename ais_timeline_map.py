@@ -1,20 +1,19 @@
 #!/usr/bin/env python3
 """
-ais_timeline_map.py — interactive timeline map showing AIS vessel tracks
-alongside radar detections, with a scrubbable timeline and satellite
-snapshot markers.
+ais_timeline_map.py — interactive multi-scene timeline map.
 
-Layers (each toggleable):
-  - AIS vessel tracks with animated trails
-  - Radar detections (dark and matched) per satellite pass
+Generates a single self-contained HTML file with:
+  • Left-panel scene calendar — click any date to switch the map
+  • AIS vessel tracks with animated trails and richer popups
+  • Radar detections (dark / matched) per scene
+  • SAR image overlay per scene (auto-detected from --sar-dir)
+  • Scrubbable timeline + play/pause, satellite-pass tick marker
 
-Controls:
-  - Timeline scrubber to move through time
-  - Play / Pause button
-  - Satellite pass markers on timeline (click to jump to that moment)
+Usage (single scene — backward-compatible):
+    python ais_timeline_map.py --scene <SAFE name> [--sar-overlay sar_overlay_YYYYMMDD.png]
 
-Usage:
-    python ais_timeline_map.py --scene <SAFE folder name> [--hours 12] [--thin 5]
+Usage (multi-scene):
+    python ais_timeline_map.py --scenes <SAFE1> <SAFE2> ... [--sar-dir .]
 """
 
 import argparse
@@ -28,11 +27,13 @@ from pathlib import Path
 
 DEFAULT_DB = Path("ais_memory.db")
 OUT_FILE   = Path("ais_timeline_map.html")
-BBOX_PAD   = 1.0    # degrees around detections bounding box
+BBOX_PAD   = 1.0    # degrees padding around detections bounding box
 
+
+# ── helpers ───────────────────────────────────────────────────────────────────
 
 def parse_scene_time(scene_name):
-    """Extract start and end Unix timestamps from a scene name."""
+    """Return (start_ts, end_ts) Unix timestamps from a Sentinel scene name."""
     matches = re.findall(r'(\d{8}T\d{6})', scene_name)
     if len(matches) < 2:
         return None, None
@@ -42,59 +43,70 @@ def parse_scene_time(scene_name):
     return to_ts(matches[0]), to_ts(matches[1])
 
 
-def fmt_time(ts):
+def scene_date_str(scene_name):
+    """Return the 8-digit date string from a scene name (e.g. '20260512')."""
+    m = re.search(r'_(\d{8})T', scene_name)
+    return m.group(1) if m else "unknown"
+
+
+def fmt_utc(ts):
     dt = datetime.datetime.utcfromtimestamp(ts)
     return dt.strftime("%Y-%m-%d %H:%M UTC")
 
 
-def main():
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--scene",  required=True,
-                    help="SAFE folder name of the primary satellite scene")
-    ap.add_argument("--db",     default=str(DEFAULT_DB))
-    ap.add_argument("--hours",  type=float, default=12,
-                    help="Total time window to show (hours, centred on satellite pass)")
-    ap.add_argument("--thin",   type=int, default=5,
-                    help="Keep one AIS ping per vessel per N minutes")
-    ap.add_argument("--sar-overlay", type=Path, default=None,
-                    help="Path to sar_overlay_YYYYMMDD.png (from extract_sar_overlay.py)")
-    args = ap.parse_args()
+def fmt_display_date(date8):
+    """'20260512' → '12 May 2026'"""
+    try:
+        dt = datetime.datetime.strptime(date8, "%Y%m%d")
+        return dt.strftime("%-d %b %Y")
+    except Exception:
+        return date8
 
-    # load SAR overlay if provided
-    sar_b64    = None
-    sar_bounds = None
-    if args.sar_overlay and args.sar_overlay.exists():
-        sar_b64 = base64.b64encode(args.sar_overlay.read_bytes()).decode("ascii")
-        bounds_file = args.sar_overlay.with_suffix(".json")
-        if bounds_file.exists():
-            import json as _json
-            sar_bounds = _json.loads(bounds_file.read_text())
-            print(f"SAR overlay : {args.sar_overlay.name}")
-        else:
-            print(f"Warning: {bounds_file} not found — SAR overlay skipped.")
-            sar_b64 = None
 
-    conn = sqlite3.connect(args.db)
+def load_sar_overlay(path: Path):
+    """
+    Load a SAR overlay PNG + companion JSON bounds file.
+    Returns (b64_string, bounds_dict) or (None, None).
+    """
+    if not path or not path.exists():
+        return None, None
+    bounds_file = path.with_suffix(".json")
+    if not bounds_file.exists():
+        print(f"  Warning: {bounds_file.name} not found — SAR overlay skipped.")
+        return None, None
+    b64     = base64.b64encode(path.read_bytes()).decode("ascii")
+    bounds  = json.loads(bounds_file.read_text())
+    return b64, bounds
 
-    # --- satellite pass time ---
-    t_start, t_end = parse_scene_time(args.scene)
+
+# ── per-scene data loading ────────────────────────────────────────────────────
+
+def load_scene(conn, scene_name: str, hours: float, thin_min: int,
+               sar_path: Path) -> dict:
+    """
+    Load everything needed for one scene from the database.
+    Returns a dict suitable for embedding in the SCENES JS variable.
+    """
+    t_start, t_end = parse_scene_time(scene_name)
     if not t_start:
-        raise SystemExit("Could not parse timestamps from scene name.")
-    t_mid = (t_start + t_end) / 2
-    half  = (args.hours * 3600) / 2
-    t_lo  = t_mid - half
-    t_hi  = t_mid + half
+        raise SystemExit(f"Cannot parse timestamps from scene name: {scene_name}")
 
-    # --- detections for this scene ---
+    t_mid  = (t_start + t_end) / 2
+    half   = (hours * 3600) / 2
+    t_lo   = t_mid - half
+    t_hi   = t_mid + half
+
+    # ── detections ────────────────────────────────────────────────────────────
     dets = conn.execute(
         """SELECT id, lat, lon, confidence, dark, matched_mmsi, match_dist_m
            FROM detections
            WHERE scene_name = ? AND lat IS NOT NULL AND dark IS NOT NULL""",
-        (args.scene,)
+        (scene_name,)
     ).fetchall()
 
     if not dets:
-        raise SystemExit("No geocoded detections found for this scene.")
+        print(f"  Warning: no geocoded detections for {scene_name[:40]} — skipping.")
+        return None
 
     dark_dets    = [d for d in dets if d[4] == 1]
     matched_dets = [d for d in dets if d[4] == 0]
@@ -108,19 +120,7 @@ def main():
     clat     = sum(all_lats) / len(all_lats)
     clon     = sum(all_lons) / len(all_lons)
 
-    # --- dark chips ---
-    date_str  = re.findall(r'(\d{8})T', args.scene)
-    chips_dir = Path(f"dark_chips_{date_str[0]}") if date_str else None
-
-    def load_chip(det_id, lat, lon):
-        if not chips_dir or not chips_dir.exists():
-            return None
-        fname = chips_dir / f"dark_{det_id:04d}_{lat:.4f}N_{lon:.4f}E.png"
-        if not fname.exists():
-            return None
-        return base64.b64encode(fname.read_bytes()).decode("ascii")
-
-    # --- vessel info ---
+    # ── vessel info ───────────────────────────────────────────────────────────
     vessel_info = {}
     for row in conn.execute(
         "SELECT mmsi, name, callsign, imo, ship_type FROM vessels"
@@ -129,13 +129,12 @@ def main():
         vessel_info[mmsi] = {
             "name":      name.strip()      if name      else None,
             "callsign":  callsign.strip()  if callsign  else None,
-            "imo":       imo               if imo       else None,
-            "ship_type": str(ship_type) if ship_type else None,
+            "imo":       imo               if imo        else None,
+            "ship_type": str(ship_type)    if ship_type  else None,
         }
     vessel_names = {m: v["name"] for m, v in vessel_info.items() if v["name"]}
 
-    # --- AIS tracks ---
-    print(f"Querying AIS positions {fmt_time(t_lo)} → {fmt_time(t_hi)} ...")
+    # ── AIS tracks ────────────────────────────────────────────────────────────
     rows = conn.execute(
         """SELECT mmsi, lat, lon, ts_epoch
            FROM positions
@@ -146,9 +145,8 @@ def main():
         (t_lo, t_hi, lat_min, lat_max, lon_min, lon_max)
     ).fetchall()
 
-    # thin: one ping per vessel per thin-minute bucket
-    thin_sec = args.thin * 60
-    tracks   = {}   # mmsi -> list of [ts, lat, lon]
+    thin_sec = thin_min * 60
+    tracks   = {}
     for mmsi, lat, lon, ts in rows:
         if mmsi not in tracks:
             tracks[mmsi] = []
@@ -156,16 +154,12 @@ def main():
         if not tracks[mmsi] or tracks[mmsi][-1][3] != bucket:
             tracks[mmsi].append([ts, lat, lon, bucket])
 
-    # strip the bucket column
     tracks_clean = {
         mmsi: [[p[0], p[1], p[2]] for p in pings]
         for mmsi, pings in tracks.items()
-        if len(pings) >= 2   # need at least 2 points for a track
+        if len(pings) >= 2
     }
 
-    print(f"  {len(tracks_clean)} vessel tracks")
-
-    # build track data for JS
     tracks_js = []
     for mmsi, pings in tracks_clean.items():
         info = vessel_info.get(mmsi, {})
@@ -178,57 +172,59 @@ def main():
             "pings":     pings,
         })
 
-    # --- radar detections data ---
+    # ── radar detections ──────────────────────────────────────────────────────
     detections_js = {
-        "scene":   args.scene,
-        "t_mid":   t_mid,
-        "time":    fmt_time(t_mid),
-        "dark":    [{"id": d[0], "lat": d[1], "lon": d[2],
-                     "conf": round(d[3], 2)} for d in dark_dets],
+        "scene": scene_name,
+        "t_mid": t_mid,
+        "time":  fmt_utc(t_mid),
+        "dark":  [{"id": d[0], "lat": d[1], "lon": d[2],
+                   "conf": round(d[3], 2)} for d in dark_dets],
         "matched": [{"id": d[0], "lat": d[1], "lon": d[2],
                      "conf": round(d[3], 2), "mmsi": d[5],
-                     "name": vessel_names.get(d[5], None)} for d in matched_dets],
+                     "name": vessel_names.get(d[5])} for d in matched_dets],
     }
 
-    # chips stored separately to avoid embedding large base64 in the main DATA object
+    # ── dark chips ────────────────────────────────────────────────────────────
+    date8    = scene_date_str(scene_name)
+    chips_dir = Path(f"dark_chips_{date8}")
     chips = {}
     for d in dark_dets:
-        chip = load_chip(d[0], d[1], d[2])
-        if chip:
-            chips[d[0]] = chip
-    chips_json = json.dumps(chips)
+        det_id, lat, lon = d[0], d[1], d[2]
+        fname = chips_dir / f"dark_{det_id:04d}_{lat:.4f}N_{lon:.4f}E.png"
+        if fname.exists():
+            chips[det_id] = base64.b64encode(fname.read_bytes()).decode("ascii")
 
-    data_json = json.dumps({
+    # ── SAR overlay ───────────────────────────────────────────────────────────
+    sar_b64, sar_bounds = load_sar_overlay(sar_path)
+    if sar_b64:
+        print(f"  SAR overlay : {sar_path.name}  ({len(sar_b64) >> 10} KB b64)")
+
+    print(f"  {len(tracks_clean)} AIS tracks  |  "
+          f"{len(dark_dets)} dark  |  {len(matched_dets)} matched  |  "
+          f"{len(chips)} chips")
+
+    return {
+        "scene":      scene_name,
+        "date8":      date8,
         "t_lo":       t_lo,
         "t_hi":       t_hi,
         "t_mid":      t_mid,
         "thin_sec":   thin_sec,
+        "center":     [clat, clon],
         "tracks":     tracks_js,
         "detections": detections_js,
-    })
+        "chips":      chips,
+        "sar_b64":    sar_b64,
+        "sar_bounds": sar_bounds,
+        "dark_count":    len(dark_dets),
+        "matched_count": len(matched_dets),
+        "pass_time":  fmt_utc(t_mid),
+    }
 
-    # SAR overlay JS
-    if sar_b64 and sar_bounds:
-        sar_js = f"""
-  var sarLayer = L.imageOverlay(
-    'data:image/png;base64,{sar_b64}',
-    [[{sar_bounds['lat_min']}, {sar_bounds['lon_min']}],
-     [{sar_bounds['lat_max']}, {sar_bounds['lon_max']}]],
-    {{opacity: 0.75}}
-  ).addTo(map);"""
-        sar_toggle = """<label><input type="checkbox" id="tog-sar" checked>
-        <span class="dot" style="background:#888;border-radius:2px"></span> SAR image</label>"""
-        sar_toggle_js = """
-  document.getElementById('tog-sar').addEventListener('change', function() {{
-    if (this.checked) map.addLayer(sarLayer); else map.removeLayer(sarLayer);
-  }});"""
-        sar_opacity = """<label style="margin-top:6px;display:flex;align-items:center;gap:6px;font-size:11px;color:#666">
-        Opacity <input type="range" min="0" max="1" step="0.05" value="0.75" style="width:80px"
-        oninput="sarLayer.setOpacity(this.value)"></label>"""
-    else:
-        sar_js = sar_toggle = sar_toggle_js = sar_opacity = ""
 
-    html = f"""<!DOCTYPE html>
+# ── HTML generation ───────────────────────────────────────────────────────────
+
+HTML_TEMPLATE = r"""<!DOCTYPE html>
 <html>
 <head>
   <meta charset="utf-8"/>
@@ -237,79 +233,134 @@ def main():
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
   <style>
-    * {{ box-sizing: border-box; margin: 0; padding: 0; }}
-    body {{ font-family: Arial, sans-serif; display: flex; flex-direction: column; height: 100vh; }}
-    #map {{ flex: 1; height: 100%; width: 100%; }}
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: Arial, sans-serif; display: flex; flex-direction: column; height: 100vh; overflow: hidden; }
 
-    /* timeline bar */
-    #timeline-bar {{
-      background: #1a1a2e; color: #eee; padding: 10px 16px;
-      display: flex; align-items: center; gap: 12px; flex-shrink: 0;
-      user-select: none;
-    }}
-    #time-label {{ font-size: 13px; white-space: nowrap; min-width: 180px; }}
-    #timeline-wrap {{
-      position: relative; flex: 1; height: 36px; display: flex; align-items: center;
-    }}
-    #timeline-slider {{
-      width: 100%; cursor: pointer; accent-color: #e74c3c;
-    }}
-    #satellite-markers {{
-      position: absolute; top: 0; left: 0; width: 100%; height: 100%;
-      pointer-events: none;
-    }}
-    .sat-tick {{
-      position: absolute; top: 0; height: 100%;
-      display: flex; flex-direction: column; align-items: center;
-      cursor: pointer; pointer-events: all;
-    }}
-    .sat-tick-line {{
-      width: 2px; background: #e74c3c; flex: 1;
-      opacity: 0.8;
-    }}
-    .sat-tick-label {{
-      font-size: 10px; color: #e74c3c; white-space: nowrap;
-      margin-top: 2px;
-    }}
-    #play-btn {{
-      background: #e74c3c; color: white; border: none;
-      padding: 6px 14px; border-radius: 4px; cursor: pointer;
-      font-size: 13px; white-space: nowrap;
-    }}
-    #play-btn:hover {{ background: #c0392b; }}
+    /* ── top section: calendar + map ── */
+    #top { display: flex; flex: 1; min-height: 0; }
 
-    /* layer toggle */
-    #layer-toggle {{
-      position: absolute; top: 10px; right: 10px; z-index: 1000;
-      background: white; padding: 10px 14px; border-radius: 6px;
-      box-shadow: 0 2px 8px rgba(0,0,0,0.3); font-size: 13px;
-      line-height: 24px;
-    }}
-    #layer-toggle label {{ display: flex; align-items: center; gap: 6px; cursor: pointer; }}
-    .dot {{ display: inline-block; width: 11px; height: 11px;
-            border-radius: 50%; flex-shrink: 0; }}
+    /* calendar sidebar */
+    #calendar-panel {
+      width: 230px; min-width: 230px;
+      background: #12122a; color: #dde;
+      display: flex; flex-direction: column;
+      overflow-y: auto; flex-shrink: 0;
+      border-right: 2px solid #1e1e40;
+    }
+    #cal-header {
+      padding: 14px 16px 10px;
+      font-size: 11px; font-weight: bold; letter-spacing: 1.5px;
+      color: #8899cc; text-transform: uppercase;
+      border-bottom: 1px solid #1e1e40;
+      flex-shrink: 0;
+    }
+    #cal-header span { font-size: 18px; margin-right: 6px; }
+    .cal-card {
+      padding: 12px 16px;
+      cursor: pointer;
+      border-bottom: 1px solid #1e1e40;
+      transition: background 0.15s;
+    }
+    .cal-card:hover { background: #1a1a3a; }
+    .cal-card.active { background: #002060; border-left: 3px solid #e2b714; }
+    .cal-card .cal-date {
+      font-size: 15px; font-weight: bold; color: #eef;
+      margin-bottom: 3px;
+    }
+    .cal-card.active .cal-date { color: #e2b714; }
+    .cal-card .cal-time { font-size: 11px; color: #8899cc; margin-bottom: 6px; }
+    .cal-card .cal-stats { display: flex; gap: 8px; }
+    .cal-badge {
+      font-size: 10px; padding: 2px 7px; border-radius: 10px;
+      font-weight: bold;
+    }
+    .badge-dark    { background: #e74c3c22; color: #e74c3c; border: 1px solid #e74c3c55; }
+    .badge-matched { background: #2ecc7122; color: #2ecc71; border: 1px solid #2ecc7155; }
+    .badge-sar     { background: #f39c1222; color: #f39c12; border: 1px solid #f39c1255; }
 
-    #title {{
+    /* map area */
+    #map-container { flex: 1; position: relative; min-width: 0; }
+    #map { width: 100%; height: 100%; }
+
+    /* overlays on map */
+    #title {
       position: absolute; top: 10px; left: 50%; transform: translateX(-50%);
       z-index: 1000; background: white; padding: 7px 18px;
       border-radius: 6px; box-shadow: 0 2px 8px rgba(0,0,0,0.3);
       font-size: 14px; font-weight: bold; white-space: nowrap;
-    }}
+    }
+    #layer-toggle {
+      position: absolute; top: 10px; right: 10px; z-index: 1000;
+      background: white; padding: 10px 14px; border-radius: 6px;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.3); font-size: 13px;
+      line-height: 28px;
+    }
+    #layer-toggle label { display: flex; align-items: center; gap: 6px; cursor: pointer; }
+    .dot { display: inline-block; width: 11px; height: 11px; border-radius: 50%; flex-shrink: 0; }
+
+    /* ── timeline bar ── */
+    #timeline-bar {
+      background: #1a1a2e; color: #eee; padding: 10px 16px;
+      display: flex; align-items: center; gap: 12px; flex-shrink: 0;
+      user-select: none;
+    }
+    #time-label { font-size: 13px; white-space: nowrap; min-width: 180px; }
+    #timeline-wrap { position: relative; flex: 1; height: 36px; display: flex; align-items: center; }
+    #timeline-slider { width: 100%; cursor: pointer; accent-color: #e74c3c; }
+    #satellite-markers {
+      position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+      pointer-events: none;
+    }
+    .sat-tick {
+      position: absolute; top: 0; height: 100%;
+      display: flex; flex-direction: column; align-items: center;
+      cursor: pointer; pointer-events: all;
+    }
+    .sat-tick-line { width: 2px; background: #e74c3c; flex: 1; opacity: 0.8; }
+    .sat-tick-label { font-size: 10px; color: #e74c3c; white-space: nowrap; margin-top: 2px; }
+    #play-btn {
+      background: #e74c3c; color: white; border: none;
+      padding: 6px 14px; border-radius: 4px; cursor: pointer;
+      font-size: 13px; white-space: nowrap;
+    }
+    #play-btn:hover { background: #c0392b; }
+
+    /* SAR opacity slider */
+    .opacity-row {
+      display: flex; align-items: center; gap: 6px;
+      font-size: 11px; color: #666; margin-top: 2px;
+    }
   </style>
 </head>
 <body>
-  <div style="position:relative; flex:1; min-height:0;">
-    <div id="title">NOCTURNAL — Maritime Timeline</div>
-    <div id="map"></div>
-    <div id="layer-toggle">
-      <label><input type="checkbox" id="tog-ais" checked>
-        <span class="dot" style="background:#3498db"></span> AIS tracks</label>
-      <label><input type="checkbox" id="tog-radar" checked>
-        <span class="dot" style="background:#e74c3c"></span> Radar detections</label>
-      {sar_toggle}
-      {sar_opacity}
+  <div id="top">
+
+    <!-- ── Calendar panel ── -->
+    <div id="calendar-panel">
+      <div id="cal-header"><span>📅</span>SCENES</div>
+      <!-- cards injected by JS -->
+    </div>
+
+    <!-- ── Map ── -->
+    <div id="map-container">
+      <div id="title">NOCTURNAL — Maritime Timeline</div>
+      <div id="map"></div>
+      <div id="layer-toggle">
+        <label><input type="checkbox" id="tog-ais" checked>
+          <span class="dot" style="background:#3498db"></span> AIS tracks</label>
+        <label><input type="checkbox" id="tog-radar" checked>
+          <span class="dot" style="background:#e74c3c"></span> Radar detections</label>
+        <label><input type="checkbox" id="tog-sar" checked>
+          <span class="dot" style="background:#888;border-radius:2px"></span> SAR image</label>
+        <div class="opacity-row">
+          Opacity <input type="range" id="sar-opacity" min="0" max="1" step="0.05" value="0.75"
+            style="width:80px">
+        </div>
+      </div>
     </div>
   </div>
+
+  <!-- ── Timeline bar ── -->
   <div id="timeline-bar">
     <button id="play-btn">▶ Play</button>
     <div id="time-label">--</div>
@@ -320,249 +371,449 @@ def main():
   </div>
 
   <script>
-  var DATA  = {data_json};
-  var CHIPS = {chips_json};
+  // ════════════════════════════════════════════════════════════════════════════
+  //  DATA — injected by Python
+  // ════════════════════════════════════════════════════════════════════════════
+  var SCENES      = __SCENES_JSON__;
+  var SCENE_ORDER = __SCENE_ORDER_JSON__;
 
-  var map = L.map('map').setView([{clat}, {clon}], 9);
-  L.tileLayer('https://{{s}}.tile.openstreetmap.org/{{z}}/{{x}}/{{y}}.png', {{
+  // ════════════════════════════════════════════════════════════════════════════
+  //  Map init
+  // ════════════════════════════════════════════════════════════════════════════
+  var firstScene = SCENES[SCENE_ORDER[0]];
+  var map = L.map('map').setView(firstScene.center, 9);
+  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
     attribution: '© OpenStreetMap contributors'
-  }}).addTo(map);
-
-  {sar_js}
+  }).addTo(map);
 
   var aisGroup   = L.layerGroup().addTo(map);
   var radarGroup = L.layerGroup().addTo(map);
+  var sarLayer   = null;
 
-  var TRAIL_SEC = 30 * 60;   // 30 minute trail
-  var tLo = DATA.t_lo, tHi = DATA.t_hi;
+  var TRAIL_SEC = 30 * 60;
 
-  // --- build vessel index ---
-  // for each track, index pings by position for fast lookup
-  var tracks = DATA.tracks;
+  // ── current scene state ────────────────────────────────────────────────────
+  var activeDateKey   = null;
+  var vesselMarkers   = {};
+  var vesselTrails    = {};
+  var selectedMmsi    = null;
+  var tLo = 0, tHi = 1, tMid = 0;
 
-  function getPos(pings, t) {{
-    // return interpolated [lat, lon] at time t, or null
-    if (!pings.length) return null;
-    if (t < pings[0][0] || t > pings[pings.length-1][0]) return null;
-    for (var i = 0; i < pings.length - 1; i++) {{
-      var a = pings[i], b = pings[i+1];
-      if (t >= a[0] && t <= b[0]) {{
-        var frac = (t - a[0]) / (b[0] - a[0]);
-        return [a[1] + frac*(b[1]-a[1]), a[2] + frac*(b[2]-a[2])];
-      }}
-    }}
-    return null;
-  }}
-
-  function getTrail(pings, t) {{
-    // return array of [lat,lon] for the trail up to t
-    var trail = [];
-    var t0 = t - TRAIL_SEC;
-    for (var i = 0; i < pings.length; i++) {{
-      if (pings[i][0] >= t0 && pings[i][0] <= t) {{
-        trail.push([pings[i][1], pings[i][2]]);
-      }}
-    }}
-    return trail;
-  }}
-
-  // tracking selected vessel
-  var selectedMmsi = null;
-
-  function selectVessel(mmsi) {{
-    if (selectedMmsi === mmsi) {{
-      selectedMmsi = null;
-      update();
-    }} else {{
-      selectedMmsi = mmsi;
-      update();
-      // re-open popup after update() re-adds the marker
-      if (vesselMarkers[mmsi]) {{
-        vesselMarkers[mmsi].marker.openPopup();
-      }}
-    }}
-  }}
-
-  // pre-build marker objects
-  var vesselMarkers = {{}};
-  var vesselTrails  = {{}};
-
-  tracks.forEach(function(t) {{
-    var marker = L.circleMarker([0,0], {{
-      radius: 5, color: '#3498db', fillColor: '#3498db',
-      fillOpacity: 0.85, weight: 1.5
-    }});
-    var label = '<b>' + (t.name || 'Unknown vessel') + '</b><br>' +
-      'MMSI: <a href="https://www.marinetraffic.com/en/ais/details/ships/mmsi:' +
-      t.mmsi + '" target="_blank">' + t.mmsi + ' ↗</a>';
-    if (t.ship_type) label += '<br>Type: ' + t.ship_type;
-    if (t.callsign)  label += '<br>Callsign: ' + t.callsign;
-    if (t.imo)       label += '<br>IMO: ' + t.imo;
-    marker.bindPopup(label, {{maxWidth: 280}});
-    marker.on('click', (function(mmsi) {{
-      return function() {{ selectVessel(mmsi); }};
-    }})(t.mmsi));
-    vesselMarkers[t.mmsi] = {{ marker: marker, pings: t.pings }};
-
-    var trail = L.polyline([], {{color:'#3498db', weight:1.5, opacity:0.4}});
-    vesselTrails[t.mmsi] = trail;
-  }});
-
-  // radar detection markers (static)
-  var det = DATA.detections;
-  det.dark.forEach(function(d) {{
-    var m = L.circleMarker([d.lat, d.lon], {{
-      radius: 8, color: '#e74c3c', fillColor: '#e74c3c',
-      fillOpacity: 0.9, weight: 2
-    }});
-    var chipB64 = CHIPS[d.id] || null;
-    var chipHtml = '';
-    if (chipB64) {{
-      chipHtml = '<br><div style="margin-top:8px">' +
-                 '<button onclick="nocResize(' + d.id + ',-64)" style="padding:2px 8px;cursor:pointer">&#8722;</button> ' +
-                 '<button onclick="nocResize(' + d.id + ',64)"  style="padding:2px 8px;cursor:pointer">+</button>' +
-                 '<br><img id="nchip' + d.id + '" src="data:image/png;base64,' + chipB64 + '" ' +
-                 'style="width:256px;height:256px;margin-top:6px;image-rendering:pixelated;border:1px solid #ccc;display:block"></div>';
-    }}
-    m.bindPopup('<b>DARK VESSEL CANDIDATE</b><br>ID: ' + d.id +
-      '<br>Confidence: ' + d.conf +
-      '<br>Satellite: ' + det.time +
-      '<br>No AIS signal within 1km / 30min' + chipHtml,
-      {{maxWidth: 700}});
-    radarGroup.addLayer(m);
-  }});
-  det.matched.forEach(function(d) {{
-    var m = L.circleMarker([d.lat, d.lon], {{
-      radius: 8, color: '#2ecc71', fillColor: '#2ecc71',
-      fillOpacity: 0.9, weight: 2
-    }});
-    var name = d.name ? '<b>' + d.name + '</b><br>' : '';
-    m.bindPopup('<b>MATCHED VESSEL</b><br>' + name + 'MMSI: ' +
-      '<a href="https://www.marinetraffic.com/en/ais/details/ships/mmsi:' +
-      d.mmsi + '" target="_blank">' + d.mmsi + ' ↗</a>' +
-      '<br>Satellite: ' + det.time +
-      '<br>Confidence: ' + d.conf, {{maxWidth:250}});
-    radarGroup.addLayer(m);
-  }});
-
-  // --- timeline ---
-  var slider   = document.getElementById('timeline-slider');
+  // ════════════════════════════════════════════════════════════════════════════
+  //  Timeline controls
+  // ════════════════════════════════════════════════════════════════════════════
+  var slider    = document.getElementById('timeline-slider');
   var timeLabel = document.getElementById('time-label');
-  var satDiv   = document.getElementById('satellite-markers');
+  var satDiv    = document.getElementById('satellite-markers');
 
-  // place satellite pass tick on the timeline
-  var satFrac = (DATA.t_mid - tLo) / (tHi - tLo);
-  var tick = document.createElement('div');
-  tick.className = 'sat-tick';
-  tick.style.left = (satFrac * 100) + '%';
-  tick.innerHTML = '<div class="sat-tick-line"></div>' +
-    '<div class="sat-tick-label">📡 ' + det.time + '</div>';
-  tick.title = 'Jump to satellite pass';
-  tick.addEventListener('click', function() {{
-    slider.value = Math.round(satFrac * 1000);
-    update();
-  }});
-  satDiv.appendChild(tick);
-
-  function currentTime() {{
+  function currentTime() {
     return tLo + (slider.value / 1000) * (tHi - tLo);
-  }}
+  }
 
-  function fmtTs(ts) {{
+  function fmtTs(ts) {
     var d = new Date(ts * 1000);
     return d.getUTCFullYear() + '-' +
       String(d.getUTCMonth()+1).padStart(2,'0') + '-' +
       String(d.getUTCDate()).padStart(2,'0') + ' ' +
       String(d.getUTCHours()).padStart(2,'0') + ':' +
       String(d.getUTCMinutes()).padStart(2,'0') + ' UTC';
-  }}
+  }
 
-  function update() {{
+  // ── helper: interpolated position ─────────────────────────────────────────
+  function getPos(pings, t) {
+    if (!pings.length) return null;
+    if (t < pings[0][0] || t > pings[pings.length-1][0]) return null;
+    for (var i = 0; i < pings.length - 1; i++) {
+      var a = pings[i], b = pings[i+1];
+      if (t >= a[0] && t <= b[0]) {
+        var frac = (t - a[0]) / (b[0] - a[0]);
+        return [a[1] + frac*(b[1]-a[1]), a[2] + frac*(b[2]-a[2])];
+      }
+    }
+    return null;
+  }
+
+  function getTrail(pings, t) {
+    var trail = [], t0 = t - TRAIL_SEC;
+    for (var i = 0; i < pings.length; i++) {
+      if (pings[i][0] >= t0 && pings[i][0] <= t)
+        trail.push([pings[i][1], pings[i][2]]);
+    }
+    return trail;
+  }
+
+  // ════════════════════════════════════════════════════════════════════════════
+  //  Build vessel markers for a scene
+  // ════════════════════════════════════════════════════════════════════════════
+  function buildVesselMarkers(tracks) {
+    vesselMarkers = {};
+    vesselTrails  = {};
+    selectedMmsi  = null;
+
+    tracks.forEach(function(t) {
+      var marker = L.circleMarker([0,0], {
+        radius: 5, color: '#3498db', fillColor: '#3498db',
+        fillOpacity: 0.85, weight: 1.5
+      });
+      var label = '<b>' + (t.name || 'Unknown vessel') + '</b><br>' +
+        'MMSI: <a href="https://www.marinetraffic.com/en/ais/details/ships/mmsi:' +
+        t.mmsi + '" target="_blank">' + t.mmsi + ' ↗</a>';
+      if (t.ship_type) label += '<br>Type: ' + t.ship_type;
+      if (t.callsign)  label += '<br>Callsign: ' + t.callsign;
+      if (t.imo)       label += '<br>IMO: ' + t.imo;
+      marker.bindPopup(label, {maxWidth: 280});
+      marker.on('click', (function(mmsi) {
+        return function() { selectVessel(mmsi); };
+      })(t.mmsi));
+      vesselMarkers[t.mmsi] = { marker: marker, pings: t.pings };
+
+      var trail = L.polyline([], {color:'#3498db', weight:1.5, opacity:0.4});
+      vesselTrails[t.mmsi] = trail;
+    });
+  }
+
+  function selectVessel(mmsi) {
+    selectedMmsi = (selectedMmsi === mmsi) ? null : mmsi;
+    update();
+    if (selectedMmsi && vesselMarkers[mmsi])
+      vesselMarkers[mmsi].marker.openPopup();
+  }
+
+  // ════════════════════════════════════════════════════════════════════════════
+  //  Build radar markers for a scene
+  // ════════════════════════════════════════════════════════════════════════════
+  function buildRadarMarkers(det, chips) {
+    radarGroup.clearLayers();
+
+    det.dark.forEach(function(d) {
+      var m = L.circleMarker([d.lat, d.lon], {
+        radius: 8, color: '#e74c3c', fillColor: '#e74c3c',
+        fillOpacity: 0.9, weight: 2
+      });
+      var chipB64 = chips[d.id] || null;
+      var chipHtml = '';
+      if (chipB64) {
+        chipHtml = '<br><div style="margin-top:8px">' +
+          '<button onclick="nocResize(' + d.id + ',-64)" style="padding:2px 8px;cursor:pointer">&#8722;</button> ' +
+          '<button onclick="nocResize(' + d.id + ',64)" style="padding:2px 8px;cursor:pointer">+</button>' +
+          '<br><img id="nchip' + d.id + '" src="data:image/png;base64,' + chipB64 + '" ' +
+          'style="width:256px;height:256px;margin-top:6px;image-rendering:pixelated;' +
+          'border:1px solid #ccc;display:block"></div>';
+      }
+      m.bindPopup('<b>DARK VESSEL CANDIDATE</b><br>ID: ' + d.id +
+        '<br>Confidence: ' + d.conf +
+        '<br>Satellite: ' + det.time +
+        '<br>No AIS signal within 1km / 30min' + chipHtml, {maxWidth: 700});
+      radarGroup.addLayer(m);
+    });
+
+    det.matched.forEach(function(d) {
+      var m = L.circleMarker([d.lat, d.lon], {
+        radius: 8, color: '#2ecc71', fillColor: '#2ecc71',
+        fillOpacity: 0.9, weight: 2
+      });
+      var name = d.name ? '<b>' + d.name + '</b><br>' : '';
+      m.bindPopup('<b>MATCHED VESSEL</b><br>' + name +
+        'MMSI: <a href="https://www.marinetraffic.com/en/ais/details/ships/mmsi:' +
+        d.mmsi + '" target="_blank">' + d.mmsi + ' ↗</a>' +
+        '<br>Satellite: ' + det.time +
+        '<br>Confidence: ' + d.conf, {maxWidth: 250});
+      radarGroup.addLayer(m);
+    });
+  }
+
+  // ════════════════════════════════════════════════════════════════════════════
+  //  SAR overlay
+  // ════════════════════════════════════════════════════════════════════════════
+  var sarOpacity = 0.75;
+  document.getElementById('sar-opacity').addEventListener('input', function() {
+    sarOpacity = parseFloat(this.value);
+    if (sarLayer) sarLayer.setOpacity(sarOpacity);
+  });
+  document.getElementById('tog-sar').addEventListener('change', function() {
+    if (!sarLayer) return;
+    if (this.checked) map.addLayer(sarLayer);
+    else map.removeLayer(sarLayer);
+  });
+
+  function updateSarOverlay(sc) {
+    if (sarLayer) { map.removeLayer(sarLayer); sarLayer = null; }
+    if (sc.sar_b64 && sc.sar_bounds) {
+      var b = sc.sar_bounds;
+      sarLayer = L.imageOverlay(
+        'data:image/png;base64,' + sc.sar_b64,
+        [[b.lat_min, b.lon_min], [b.lat_max, b.lon_max]],
+        {opacity: sarOpacity}
+      );
+      if (document.getElementById('tog-sar').checked)
+        sarLayer.addTo(map);
+    }
+  }
+
+  // ════════════════════════════════════════════════════════════════════════════
+  //  Satellite pass tick
+  // ════════════════════════════════════════════════════════════════════════════
+  function updateSatTick(sc) {
+    satDiv.innerHTML = '';
+    var satFrac = (sc.t_mid - tLo) / (tHi - tLo);
+    var tick = document.createElement('div');
+    tick.className = 'sat-tick';
+    tick.style.left = (satFrac * 100) + '%';
+    tick.innerHTML = '<div class="sat-tick-line"></div>' +
+      '<div class="sat-tick-label">📡 ' + sc.pass_time + '</div>';
+    tick.title = 'Jump to satellite pass';
+    tick.addEventListener('click', function() {
+      slider.value = Math.round(satFrac * 1000);
+      update();
+    });
+    satDiv.appendChild(tick);
+    return satFrac;
+  }
+
+  // ════════════════════════════════════════════════════════════════════════════
+  //  Main update (redraw markers at current time)
+  // ════════════════════════════════════════════════════════════════════════════
+  function update() {
     var t = currentTime();
     timeLabel.textContent = fmtTs(t);
-
     aisGroup.clearLayers();
 
+    if (!document.getElementById('tog-ais').checked) return;
+
+    var sc = SCENES[activeDateKey];
     var followPos = null;
-    if (document.getElementById('tog-ais').checked) {{
-      tracks.forEach(function(tr) {{
-        var pos = getPos(tr.pings, t);
-        if (!pos) return;
-        var isSelected = (tr.mmsi === selectedMmsi);
-        var color = isSelected ? '#9b59b6' : '#3498db';
-        var radius = isSelected ? 9 : 5;
-        var marker = vesselMarkers[tr.mmsi].marker;
-        marker.setLatLng(pos);
-        marker.setStyle({{
-          color: color, fillColor: color,
-          radius: radius, weight: isSelected ? 3 : 1.5
-        }});
-        aisGroup.addLayer(marker);
-        if (isSelected) followPos = pos;
 
-        var trail = getTrail(tr.pings, t);
-        if (trail.length > 1) {{
-          var line = vesselTrails[tr.mmsi];
-          line.setLatLngs(trail);
-          line.setStyle({{color: color, weight: isSelected ? 2.5 : 1.5, opacity: isSelected ? 0.8 : 0.4}});
-          aisGroup.addLayer(line);
-        }}
-      }});
-    }}
-    if (followPos) map.panTo(followPos, {{animate: true, duration: 0.3}});
-  }}
+    sc.tracks.forEach(function(tr) {
+      var data = vesselMarkers[tr.mmsi];
+      if (!data) return;
+      var pos = getPos(data.pings, t);
+      if (!pos) return;
 
+      var isSelected = (tr.mmsi === selectedMmsi);
+      var color  = isSelected ? '#9b59b6' : '#3498db';
+      var radius = isSelected ? 9 : 5;
+      var marker = data.marker;
+      marker.setLatLng(pos);
+      marker.setStyle({color: color, fillColor: color,
+                       radius: radius, weight: isSelected ? 3 : 1.5});
+      aisGroup.addLayer(marker);
+      if (isSelected) followPos = pos;
+
+      var trail = getTrail(data.pings, t);
+      if (trail.length > 1) {
+        var line = vesselTrails[tr.mmsi];
+        line.setLatLngs(trail);
+        line.setStyle({color: color, weight: isSelected ? 2.5 : 1.5,
+                       opacity: isSelected ? 0.8 : 0.4});
+        aisGroup.addLayer(line);
+      }
+    });
+
+    if (followPos) map.panTo(followPos, {animate: true, duration: 0.3});
+  }
+
+  // ════════════════════════════════════════════════════════════════════════════
+  //  Load a scene (called on calendar card click)
+  // ════════════════════════════════════════════════════════════════════════════
+  function loadScene(dateKey) {
+    if (dateKey === activeDateKey) return;
+    activeDateKey = dateKey;
+    var sc = SCENES[dateKey];
+
+    // update calendar highlight
+    document.querySelectorAll('.cal-card').forEach(function(c) {
+      c.classList.toggle('active', c.dataset.key === dateKey);
+    });
+
+    // update timeline bounds
+    tLo  = sc.t_lo;
+    tHi  = sc.t_hi;
+    tMid = sc.t_mid;
+
+    // rebuild markers
+    buildVesselMarkers(sc.tracks);
+    buildRadarMarkers(sc.detections, sc.chips);
+    updateSarOverlay(sc);
+    var satFrac = updateSatTick(sc);
+
+    // show/hide radar per toggle
+    if (document.getElementById('tog-radar').checked) map.addLayer(radarGroup);
+    else map.removeLayer(radarGroup);
+
+    // jump to satellite pass time
+    slider.value = Math.round(satFrac * 1000);
+    update();
+
+    // pan to scene centre
+    map.setView(sc.center, 9);
+  }
+
+  // ════════════════════════════════════════════════════════════════════════════
+  //  Build calendar cards
+  // ════════════════════════════════════════════════════════════════════════════
+  var calPanel = document.getElementById('calendar-panel');
+
+  SCENE_ORDER.forEach(function(key) {
+    var sc = SCENES[key];
+    var card = document.createElement('div');
+    card.className = 'cal-card';
+    card.dataset.key = key;
+
+    var dateLabel = sc.display_date || key;
+    var timeLabel2 = sc.pass_time.split(' ')[1] + ' ' + sc.pass_time.split(' ')[2]; // "HH:MM UTC"
+
+    var sarBadge = sc.sar_b64
+      ? '<span class="cal-badge badge-sar">SAR</span>'
+      : '';
+
+    card.innerHTML =
+      '<div class="cal-date">' + dateLabel + '</div>' +
+      '<div class="cal-time">📡 ' + timeLabel2 + '</div>' +
+      '<div class="cal-stats">' +
+        '<span class="cal-badge badge-dark">' + sc.dark_count + ' dark</span>' +
+        '<span class="cal-badge badge-matched">' + sc.matched_count + ' matched</span>' +
+        sarBadge +
+      '</div>';
+
+    card.addEventListener('click', function() { loadScene(key); });
+    calPanel.appendChild(card);
+  });
+
+  // ════════════════════════════════════════════════════════════════════════════
+  //  Toggle handlers
+  // ════════════════════════════════════════════════════════════════════════════
   slider.addEventListener('input', update);
 
-  // layer toggles
   document.getElementById('tog-ais').addEventListener('change', update);
-  document.getElementById('tog-radar').addEventListener('change', function() {{
+  document.getElementById('tog-radar').addEventListener('change', function() {
     if (this.checked) map.addLayer(radarGroup);
     else map.removeLayer(radarGroup);
-  }});
+  });
 
-  // play / pause
-  var playing = false;
-  var playInterval = null;
-  var STEP = 2;   // slider units per tick
-  document.getElementById('play-btn').addEventListener('click', function() {{
+  // ════════════════════════════════════════════════════════════════════════════
+  //  Play / Pause
+  // ════════════════════════════════════════════════════════════════════════════
+  var playing = false, playInterval = null, STEP = 2;
+  document.getElementById('play-btn').addEventListener('click', function() {
     playing = !playing;
     this.textContent = playing ? '⏸ Pause' : '▶ Play';
-    if (playing) {{
-      playInterval = setInterval(function() {{
+    if (playing) {
+      playInterval = setInterval(function() {
         var v = parseInt(slider.value) + STEP;
         if (v > 1000) v = 0;
         slider.value = v;
         update();
-      }}, 100);
-    }} else {{
+      }, 100);
+    } else {
       clearInterval(playInterval);
-    }}
-  }});
+    }
+  });
 
-  // resize chip image
-  function nocResize(id, delta) {{
+  // ════════════════════════════════════════════════════════════════════════════
+  //  Chip zoom helper
+  // ════════════════════════════════════════════════════════════════════════════
+  function nocResize(id, delta) {
     var img = document.getElementById('nchip' + id);
     if (!img) return;
     var w = Math.max(64, parseInt(img.style.width) + delta);
     img.style.width  = w + 'px';
     img.style.height = w + 'px';
-  }}
+  }
 
-  {sar_toggle_js}
+  // ════════════════════════════════════════════════════════════════════════════
+  //  Boot: load most recent scene first
+  // ════════════════════════════════════════════════════════════════════════════
+  loadScene(SCENE_ORDER[0]);
 
-  // initialise at satellite pass time
-  slider.value = Math.round(satFrac * 1000);
-  update();
   </script>
 </body>
 </html>"""
 
+
+# ── main ──────────────────────────────────────────────────────────────────────
+
+def main():
+    ap = argparse.ArgumentParser(
+        description="Generate an interactive multi-scene timeline map for NOCTURNAL"
+    )
+
+    # accept either --scene (singular, backward-compat) or --scenes (plural)
+    scene_group = ap.add_mutually_exclusive_group(required=True)
+    scene_group.add_argument("--scene",  help="Single scene (backward-compatible)")
+    scene_group.add_argument("--scenes", nargs="+",
+                             help="One or more scene SAFE folder names")
+
+    ap.add_argument("--db",       default=str(DEFAULT_DB))
+    ap.add_argument("--hours",    type=float, default=12,
+                    help="Time window to show per scene (hours, centred on pass)")
+    ap.add_argument("--thin",     type=int, default=5,
+                    help="Thin AIS pings to one per vessel per N minutes")
+
+    # SAR overlay: single path (old) or directory (new multi-scene auto-detect)
+    sar_group = ap.add_mutually_exclusive_group()
+    sar_group.add_argument("--sar-overlay", type=Path,
+                           help="Single SAR overlay PNG (single-scene mode)")
+    sar_group.add_argument("--sar-dir",     type=Path, default=Path("."),
+                           help="Directory to auto-detect sar_overlay_YYYYMMDD.png files")
+
+    args = ap.parse_args()
+
+    # normalise to a list of scene names
+    if args.scene:
+        scene_list = [args.scene]
+    else:
+        scene_list = args.scenes
+
+    # sort scenes by date (oldest → newest; displayed newest first in calendar)
+    def scene_sort_key(name):
+        t, _ = parse_scene_time(name)
+        return t or 0
+    scene_list = sorted(scene_list, key=scene_sort_key)
+
+    conn = sqlite3.connect(args.db)
+
+    scenes_data  = {}   # date8 → scene dict
+    scene_order  = []   # date8 keys, newest first
+
+    for scene_name in scene_list:
+        date8 = scene_date_str(scene_name)
+        print(f"\nLoading scene {date8} — {scene_name[:60]} ...")
+
+        # resolve SAR overlay path
+        if args.sar_overlay and len(scene_list) == 1:
+            sar_path = args.sar_overlay
+        elif args.sar_dir:
+            sar_path = args.sar_dir / f"sar_overlay_{date8}.png"
+        else:
+            sar_path = None
+
+        sc = load_scene(conn, scene_name, args.hours, args.thin, sar_path)
+        if sc is None:
+            continue
+
+        sc["display_date"] = fmt_display_date(date8)
+
+        scenes_data[date8] = sc
+        scene_order.append(date8)
+
+    if not scenes_data:
+        raise SystemExit("No scenes with valid detections found — nothing to render.")
+
+    # newest first in calendar
+    scene_order.reverse()
+
+    # embed into HTML
+    scenes_json = json.dumps(scenes_data)
+    order_json  = json.dumps(scene_order)
+
+    html = HTML_TEMPLATE \
+        .replace("__SCENES_JSON__",      scenes_json) \
+        .replace("__SCENE_ORDER_JSON__", order_json)
+
     OUT_FILE.write_text(html, encoding="utf-8")
-    print(f"Map saved to {OUT_FILE.resolve()}")
-    print(f"  {len(tracks_clean)} AIS vessel tracks")
-    print(f"  {len(dark_dets)} dark detections, {len(matched_dets)} matched detections")
-    print(f"  Time window: {fmt_time(t_lo)} → {fmt_time(t_hi)}")
+    size_kb = OUT_FILE.stat().st_size >> 10
+    print(f"\nMap saved to {OUT_FILE.resolve()}  ({size_kb} KB)")
+    print(f"  {len(scenes_data)} scene(s) embedded")
     print("Open ais_timeline_map.html in your browser.")
 
 
