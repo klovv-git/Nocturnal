@@ -23,6 +23,8 @@ import numpy as np
 from pathlib import Path
 from PIL import Image
 
+from config import SAR_OVERLAYS_DIR
+
 try:
     import rasterio
     from rasterio.warp import reproject, calculate_default_transform, Resampling
@@ -61,8 +63,9 @@ def main():
 
     date_match = re.search(r'_(\d{8})T', args.scene)
     date_str   = date_match.group(1) if date_match else "unknown"
-    out_png    = Path(f"sar_overlay_{date_str}.png")
-    out_json   = Path(f"sar_overlay_{date_str}.json")
+    SAR_OVERLAYS_DIR.mkdir(parents=True, exist_ok=True)
+    out_png    = SAR_OVERLAYS_DIR / f"sar_overlay_{date_str}.png"
+    out_json   = SAR_OVERLAYS_DIR / f"sar_overlay_{date_str}.json"
 
     tif = locate_measurement(args.safe, args.pol)
     print(f"SAR image : {tif.name}")

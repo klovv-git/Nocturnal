@@ -25,7 +25,7 @@ import datetime
 import calendar
 from pathlib import Path
 
-from config import DB_PATH, TIMELINE_HOURS, THIN_MINUTES, BBOX_PAD
+from config import DB_PATH, TIMELINE_HOURS, THIN_MINUTES, BBOX_PAD, SAR_OVERLAYS_DIR, SENTINEL_DATA_DIR
 
 DEFAULT_DB = DB_PATH
 OUT_FILE   = Path("ais_timeline_map.html")
@@ -754,8 +754,8 @@ def main():
     sar_group = ap.add_mutually_exclusive_group()
     sar_group.add_argument("--sar-overlay", type=Path,
                            help="Single SAR overlay PNG (single-scene mode)")
-    sar_group.add_argument("--sar-dir",     type=Path, default=Path("."),
-                           help="Directory to auto-detect sar_overlay_YYYYMMDD.png files")
+    sar_group.add_argument("--sar-dir",     type=Path, default=SAR_OVERLAYS_DIR,
+                           help=f"Directory to auto-detect sar_overlay_YYYYMMDD.png files (default: {SAR_OVERLAYS_DIR})")
 
     args = ap.parse_args()
 

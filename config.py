@@ -32,6 +32,12 @@ AOI_WKT = (
     f"{AOI_LON_MIN} {AOI_LAT_MIN}))"
 )
 
+# ── Folder layout ─────────────────────────────────────────────────────────────
+SENTINEL_DATA_DIR = Path("sentinel_data")   # downloaded .SAFE folders + zips
+SAR_OVERLAYS_DIR  = Path("sar_overlays")    # sar_overlay_YYYYMMDD.png + .json
+CHIPS_DIR_PREFIX  = "dark_chips_"           # per-scene chip folders: dark_chips_YYYYMMDD
+REVIEWS_DIR       = Path("reviews")         # chip review JSON files
+
 # ── Database ──────────────────────────────────────────────────────────────────
 DB_PATH = Path("ais_memory.db")
 

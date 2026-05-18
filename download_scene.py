@@ -44,7 +44,7 @@ try:
 except ImportError:
     HAS_TQDM = False
 
-from config import AOI_WKT
+from config import AOI_WKT, SENTINEL_DATA_DIR, SAR_OVERLAYS_DIR
 
 # ── CDSE endpoints ─────────────────────────────────────────────────────────────
 CATALOGUE_URL = "https://catalogue.dataspace.copernicus.eu/odata/v1/Products"
@@ -225,10 +225,12 @@ def main():
                     help="Auto-select result at this index and download immediately")
     ap.add_argument("--username", default=None, help="CDSE username")
     ap.add_argument("--password", default=None, help="CDSE password")
-    ap.add_argument("--out-dir",  type=Path, default=Path("."),
-                    help="Directory to save the downloaded scene (default: .)")
+    ap.add_argument("--out-dir",  type=Path, default=SENTINEL_DATA_DIR,
+                    help=f"Directory to save the downloaded scene (default: {SENTINEL_DATA_DIR})")
     ap.add_argument("--no-extract", action="store_true",
                     help="Keep the zip file but skip extraction")
+    ap.add_argument("--keep-zip", action="store_true",
+                    help="Keep the zip file after extraction (default: delete it to save space)")
     args = ap.parse_args()
 
     # ── search ─────────────────────────────────────────────────────────────────
@@ -293,16 +295,21 @@ def main():
     else:
         result = download_product(uuid, name, token, args.out_dir)
 
+        # delete zip to save disk space (unless --keep-zip)
+        if not args.keep_zip:
+            out_zip = args.out_dir / f"{name}.zip"
+            if out_zip.exists():
+                out_zip.unlink()
+                print(f"Deleted zip (use --keep-zip to retain it)")
+
     # ── next steps ─────────────────────────────────────────────────────────────
-    print(f"\n✓ Done! Scene is at: {result}")
+    print(f"\n✓ Done! Scene saved to: {result}")
     print(f"\nNext steps:")
     print(f'  1. Extract SAR overlay:')
     print(f'     python extract_sar_overlay.py --scene "{name}" --safe "{result}"')
-    print(f'  2. Run YOLO detection + geocoding as normal, then:')
+    print(f'  2. Run YOLO detection + geocoding + AIS matching as normal, then:')
     print(f'  3. View multi-scene timeline:')
-    print(f'     python ais_timeline_map.py \\')
-    print(f'       --scenes "<old_scene>" "{name}" \\')
-    print(f'       --sar-dir .')
+    print(f'     python ais_timeline_map.py --scenes "<scene1>" "{name}"')
 
 
 if __name__ == "__main__":
