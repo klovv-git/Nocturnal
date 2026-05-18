@@ -50,8 +50,10 @@ CATALOGUE_URL = "https://catalogue.dataspace.copernicus.eu/odata/v1/Products"
 TOKEN_URL     = "https://identity.dataspace.copernicus.eu/auth/realms/CDSE/protocol/openid-connect/token"
 DOWNLOAD_BASE = "https://download.dataspace.copernicus.eu/odata/v1/Products({uuid})/$value"
 
-# ── Default area: English Channel ──────────────────────────────────────────────
-DEFAULT_WKT = "POLYGON((-2.5 49.0, 3.5 49.0, 3.5 51.5, -2.5 51.5, -2.5 49.0))"
+# ── Default area: English Channel + southern North Sea ─────────────────────────
+# Covers the English Channel and extends north-east to the Thames Estuary,
+# Dutch coast (Amsterdam / Rotterdam) and Belgian coast (Antwerp).
+DEFAULT_WKT = "POLYGON((-2.5 49.0, 6.5 49.0, 6.5 53.0, -2.5 53.0, -2.5 49.0))"
 
 
 # ──────────────────────────────────────────────────────────────────────────────
