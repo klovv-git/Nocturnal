@@ -168,7 +168,7 @@ PANEL_HTML = r"""
 
       <div id="np-step-search">
         <div class="np-row">
-          <span class="np-label">After date</span>
+          <span class="np-label">Pass date</span>
           <input class="np-input" id="np-date" type="date">
           <button class="np-btn" id="np-search-btn" onclick="npSearch()">🔍 Search</button>
         </div>
@@ -208,10 +208,8 @@ PANEL_HTML = r"""
 
   // ── Open modal ──────────────────────────────────────────────────────────
   function npOpen() {
-    // default date = yesterday
-    var d = new Date();
-    d.setDate(d.getDate() - 1);
-    document.getElementById('np-date').value = d.toISOString().slice(0, 10);
+    // default date = today
+    document.getElementById('np-date').value = new Date().toISOString().slice(0, 10);
 
     // check credentials
     fetch('/api/creds').then(r => r.json()).then(function (data) {
@@ -253,10 +251,15 @@ PANEL_HTML = r"""
     document.getElementById('np-scene-count').textContent = '';
     document.getElementById('np-dl-btn').style.display = 'none';
 
+    // search the selected day only (after = date, before = date + 1)
+    var d = new Date(after + 'T12:00:00Z');
+    d.setDate(d.getDate() + 1);
+    var before = d.toISOString().slice(0, 10);
+
     fetch('/api/search', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ after: after })
+      body: JSON.stringify({ after: after, before: before })
     })
       .then(r => r.json())
       .then(function (data) {
@@ -400,10 +403,11 @@ def api_creds():
 
 @app.route("/api/search", methods=["POST"])
 def api_search():
-    data  = request.json or {}
-    after = data.get("after", "2026-01-01")
+    data   = request.json or {}
+    after  = data.get("after",  "2026-01-01")
+    before = data.get("before", None)
     try:
-        scenes = search_scenes(after, wkt=AOI_WKT, limit=15)
+        scenes = search_scenes(after, before=before, wkt=AOI_WKT, limit=15)
         results = [
             {
                 "name":    s.get("Name", "?"),
