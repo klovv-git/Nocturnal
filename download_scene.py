@@ -178,6 +178,19 @@ def _attr(product: dict, name: str) -> str:
     return "?"
 
 
+def extract_orbit_from_name(scene_name: str) -> str:
+    """
+    Extract the 6-digit absolute orbit number from a Sentinel scene name.
+    e.g. 'S1D_IW_GRDH_1SDV_20260512T061448_20260512T061513_002747_...' → '002747'
+    """
+    parts = scene_name.replace(".SAFE", "").split("_")
+    if len(parts) >= 7:
+        candidate = parts[6]
+        if candidate.isdigit() and len(candidate) == 6:
+            return candidate
+    return None
+
+
 def fmt_scene(idx: int, product: dict) -> str:
     """Format one search result for display."""
     name    = product.get("Name", "?")
@@ -223,7 +236,9 @@ def main():
     ap.add_argument("--limit",    type=int, default=10,
                     help="Max number of search results (default: 10)")
     ap.add_argument("--orbit",    type=int, default=None,
-                    help="Only show scenes with this relative orbit number (use to lock onto a known-good track)")
+                    help="Only show scenes with this relative orbit number")
+    ap.add_argument("--pass-hour", type=int, default=None,
+                    help="Only show scenes acquired within ±1h of this UTC hour (e.g. 6 for the ~06:13 UTC English Channel pass)")
     ap.add_argument("--select",   type=int, default=None,
                     help="Auto-select result at this index and download immediately")
     ap.add_argument("--username", default=None, help="CDSE username")
@@ -234,6 +249,8 @@ def main():
                     help="Keep the zip file but skip extraction")
     ap.add_argument("--keep-zip", action="store_true",
                     help="Keep the zip file after extraction (default: delete it to save space)")
+    ap.add_argument("--all-slices", action="store_true",
+                    help="Download ALL slices from the same pass as the selected scene (same orbit number)")
     args = ap.parse_args()
 
     # ── search ─────────────────────────────────────────────────────────────────
@@ -252,6 +269,21 @@ def main():
             print(f"No scenes found with relative orbit {args.orbit}.")
             return
         print(f"Filtered to orbit {args.orbit}: {len(scenes)} scene(s)\n")
+
+    # filter by acquisition UTC hour if requested
+    if args.pass_hour is not None:
+        def _hour_matches(product):
+            start = product.get("ContentDate", {}).get("Start", "")
+            try:
+                h = int(start[11:13])  # "2026-05-12T06:14:..." → 6
+                return abs(h - args.pass_hour) <= 1
+            except Exception:
+                return False
+        scenes = [s for s in scenes if _hour_matches(s)]
+        if not scenes:
+            print(f"No scenes found near {args.pass_hour:02d}:00 UTC.")
+            return
+        print(f"Filtered to ~{args.pass_hour:02d}:00 UTC passes: {len(scenes)} scene(s)\n")
 
     print(f"\nFound {len(scenes)} scene(s):\n")
     for i, s in enumerate(scenes):
@@ -275,7 +307,22 @@ def main():
     product = scenes[idx]
     name    = product["Name"]
     uuid    = product["Id"]
-    print(f"\nSelected: {name}\n")
+
+    # --all-slices: expand selection to all scenes with the same orbit
+    if args.all_slices:
+        selected_orbit = extract_orbit_from_name(name)
+        if selected_orbit:
+            to_download = [s for s in scenes
+                           if extract_orbit_from_name(s["Name"]) == selected_orbit]
+            print(f"\nOrbit {selected_orbit} — {len(to_download)} slice(s) to download:")
+            for s in to_download:
+                print(f"  {s['Name'][:72]}")
+        else:
+            print("Warning: could not extract orbit number — downloading selected scene only.")
+            to_download = [product]
+    else:
+        to_download = [product]
+        print(f"\nSelected: {name}\n")
 
     # ── credentials ────────────────────────────────────────────────────────────
     username, password = load_credentials(args)
@@ -289,39 +336,60 @@ def main():
     token = get_token(username, password)
     print("Authenticated ✓\n")
 
-    # ── download ───────────────────────────────────────────────────────────────
+    # ── download all selected slices ───────────────────────────────────────────
     args.out_dir.mkdir(parents=True, exist_ok=True)
+    results = []
 
-    if args.no_extract:
-        url     = DOWNLOAD_BASE.format(uuid=uuid)
-        out_zip = args.out_dir / f"{name}.zip"
-        print(f"Downloading {name} ...")
-        with requests.get(url, headers={"Authorization": f"Bearer {token}"},
-                          stream=True, timeout=120) as resp:
-            resp.raise_for_status()
-            with open(out_zip, "wb") as f:
-                for chunk in resp.iter_content(chunk_size=1 << 20):
-                    f.write(chunk)
-        print(f"Saved: {out_zip}")
-        result = out_zip
-    else:
-        result = download_product(uuid, name, token, args.out_dir)
+    for prod in to_download:
+        pname = prod["Name"]
+        puuid = prod["Id"]
 
-        # delete zip to save disk space (unless --keep-zip)
-        if not args.keep_zip:
-            out_zip = args.out_dir / f"{name}.zip"
-            if out_zip.exists():
-                out_zip.unlink()
-                print(f"Deleted zip (use --keep-zip to retain it)")
+        if args.no_extract:
+            url     = DOWNLOAD_BASE.format(uuid=puuid)
+            out_zip = args.out_dir / f"{pname}.zip"
+            print(f"Downloading {pname} ...")
+            with requests.get(url, headers={"Authorization": f"Bearer {token}"},
+                              stream=True, timeout=120) as resp:
+                resp.raise_for_status()
+                with open(out_zip, "wb") as f:
+                    for chunk in resp.iter_content(chunk_size=1 << 20):
+                        f.write(chunk)
+            print(f"Saved: {out_zip}")
+            results.append((pname, out_zip))
+        else:
+            safe_dir = download_product(puuid, pname, token, args.out_dir)
+            if not args.keep_zip:
+                out_zip = args.out_dir / f"{pname}.zip"
+                if out_zip.exists():
+                    out_zip.unlink()
+                    print(f"Deleted zip (use --keep-zip to retain it)")
+            results.append((pname, safe_dir))
 
     # ── next steps ─────────────────────────────────────────────────────────────
-    print(f"\n✓ Done! Scene saved to: {result}")
-    print(f"\nNext steps:")
-    print(f'  1. Extract SAR overlay:')
-    print(f'     python extract_sar_overlay.py --scene "{name}" --safe "{result}"')
-    print(f'  2. Run YOLO detection + geocoding + AIS matching as normal, then:')
-    print(f'  3. View multi-scene timeline:')
-    print(f'     python ais_timeline_map.py --scenes "<scene1>" "{name}"')
+    print(f"\n✓ Done! Downloaded {len(results)} slice(s):\n")
+    sar_cmds   = []
+    yolo_cmds  = []
+    scene_args = []
+
+    for pname, path in results:
+        print(f"  {path}")
+        sar_cmds.append(
+            f'  python extract_sar_overlay.py --scene "{pname}" --safe "{path}"'
+        )
+        yolo_cmds.append(
+            f'  python yolo_infer_sar.py "{path}" '
+            f'--weights runs\\detect\\runs\\nocturnal\\yolov8n-sar-finetune\\weights\\best.pt --conf 0.2\n'
+            f'  python geocode_match.py --scene "{pname}" --safe "{path}"'
+        )
+        scene_args.append(f'"{pname}"')
+
+    print(f"\nNext steps — run for each slice:")
+    print(f"\n1. Extract SAR overlays:")
+    print("\n".join(sar_cmds))
+    print(f"\n2. Run detection pipeline (YOLO + geocode) for each slice:")
+    print("\n".join(yolo_cmds))
+    print(f"\n3. View multi-scene timeline:")
+    print(f'   python ais_timeline_map.py --scenes {" ".join(scene_args)}')
 
 
 if __name__ == "__main__":

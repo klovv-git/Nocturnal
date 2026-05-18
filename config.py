@@ -41,15 +41,15 @@ REVIEWS_DIR       = Path("reviews")         # chip review JSON files
 # ── Database ──────────────────────────────────────────────────────────────────
 DB_PATH = Path("ais_memory.db")
 
-# ── Known good relative orbit numbers ────────────────────────────────────────
-# These orbits are confirmed to pass over the English Channel / southern North
-# Sea water area. Add more as you discover them.
-# Find the orbit number by running: python download_scene.py --after <date>
-# and looking at the orbit= column in the results.
-# Example: python download_scene.py --after 2026-05-19 --orbit 30
-KNOWN_ORBITS = [
-    # 30,   # ← add confirmed orbit numbers here after testing
-]
+# ── Known good pass times (UTC hour) ─────────────────────────────────────────
+# Sentinel-1 passes over the English Channel / southern North Sea at consistent
+# times. Use --pass-hour to filter downloads to these windows.
+#
+#   ~06:13 UTC  — morning pass, confirmed over water (S1D orbit 002747, May 12)
+#   (evening passes at ~17:20-18:05 UTC cover a different, land-heavy track)
+#
+# Usage: python download_scene.py --after 2026-05-18 --pass-hour 6
+CHANNEL_PASS_HOUR_UTC = 6
 
 # ── Pipeline defaults ─────────────────────────────────────────────────────────
 TIMELINE_HOURS  = 12    # AIS window around each satellite pass (hours)

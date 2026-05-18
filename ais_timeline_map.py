@@ -50,6 +50,41 @@ def scene_date_str(scene_name):
     return m.group(1) if m else "unknown"
 
 
+def extract_abs_orbit(scene_name: str) -> str:
+    """
+    Extract the 6-digit absolute orbit number from a scene name.
+    e.g. 'S1D_IW_GRDH_1SDV_20260512T061448_..._002747_...' → '002747'
+    Falls back to scene_name itself so ungrouped scenes still work.
+    """
+    parts = scene_name.replace(".SAFE", "").split("_")
+    if len(parts) >= 7:
+        candidate = parts[6]
+        if candidate.isdigit() and len(candidate) == 6:
+            return candidate
+    return scene_name
+
+
+def find_sar_overlay(sar_dir: Path, scene_name: str):
+    """
+    Find SAR overlay PNG for a scene. Tries:
+      1. sar_overlays/sar_overlay_20260512T061448.png  (new per-slice naming)
+      2. sar_overlays/sar_overlay_20260512.png          (old date-only naming)
+    Returns Path if found, else None.
+    """
+    if not sar_dir:
+        return None
+    # try timestamp-based name
+    m = re.search(r'_(\d{8}T\d{6})_', scene_name)
+    if m:
+        p = sar_dir / f"sar_overlay_{m.group(1)}.png"
+        if p.exists():
+            return p
+    # fall back to date-only name
+    date8 = scene_date_str(scene_name)
+    p = sar_dir / f"sar_overlay_{date8}.png"
+    return p if p.exists() else None
+
+
 def fmt_utc(ts):
     dt = datetime.datetime.utcfromtimestamp(ts)
     return dt.strftime("%Y-%m-%d %H:%M UTC")
@@ -80,48 +115,18 @@ def load_sar_overlay(path: Path):
     return b64, bounds
 
 
-# ── per-scene data loading ────────────────────────────────────────────────────
+# ── per-pass data loading ─────────────────────────────────────────────────────
 
-def load_scene(conn, scene_name: str, hours: float, thin_min: int,
-               sar_path: Path) -> dict:
+def load_pass(conn, scene_names: list, hours: float, thin_min: int,
+              sar_dir: Path) -> dict:
     """
-    Load everything needed for one scene from the database.
-    Returns a dict suitable for embedding in the SCENES JS variable.
+    Load and combine data for one or more scene slices from the same satellite pass.
+    Returns a dict suitable for embedding in the SCENES JS variable, or None if
+    no detections are found across any of the slices.
     """
-    t_start, t_end = parse_scene_time(scene_name)
-    if not t_start:
-        raise SystemExit(f"Cannot parse timestamps from scene name: {scene_name}")
+    thin_sec = thin_min * 60
 
-    t_mid  = (t_start + t_end) / 2
-    half   = (hours * 3600) / 2
-    t_lo   = t_mid - half
-    t_hi   = t_mid + half
-
-    # ── detections ────────────────────────────────────────────────────────────
-    dets = conn.execute(
-        """SELECT id, lat, lon, confidence, dark, matched_mmsi, match_dist_m
-           FROM detections
-           WHERE scene_name = ? AND lat IS NOT NULL AND dark IS NOT NULL""",
-        (scene_name,)
-    ).fetchall()
-
-    if not dets:
-        print(f"  Warning: no geocoded detections for {scene_name[:40]} — skipping.")
-        return None
-
-    dark_dets    = [d for d in dets if d[4] == 1]
-    matched_dets = [d for d in dets if d[4] == 0]
-
-    all_lats = [d[1] for d in dets]
-    all_lons = [d[2] for d in dets]
-    lat_min  = min(all_lats) - BBOX_PAD
-    lat_max  = max(all_lats) + BBOX_PAD
-    lon_min  = min(all_lons) - BBOX_PAD
-    lon_max  = max(all_lons) + BBOX_PAD
-    clat     = sum(all_lats) / len(all_lats)
-    clon     = sum(all_lons) / len(all_lons)
-
-    # ── vessel info ───────────────────────────────────────────────────────────
+    # ── vessel info (load once) ───────────────────────────────────────────────
     vessel_info = {}
     for row in conn.execute(
         "SELECT mmsi, name, callsign, imo, ship_type FROM vessels"
@@ -135,7 +140,78 @@ def load_scene(conn, scene_name: str, hours: float, thin_min: int,
         }
     vessel_names = {m: v["name"] for m, v in vessel_info.items() if v["name"]}
 
-    # ── AIS tracks ────────────────────────────────────────────────────────────
+    # ── collect data across all slices ────────────────────────────────────────
+    all_dark     = []
+    all_matched  = []
+    all_chips    = {}
+    sar_overlays = []   # list of {"b64": ..., "bounds": {...}}
+    t_lo_list, t_hi_list, t_mid_list = [], [], []
+    all_lats, all_lons = [], []
+
+    for scene_name in scene_names:
+        t_start, t_end = parse_scene_time(scene_name)
+        if not t_start:
+            print(f"  Warning: cannot parse timestamps for {scene_name[:50]} — skipping.")
+            continue
+
+        t_mid = (t_start + t_end) / 2
+        half  = (hours * 3600) / 2
+        t_lo  = t_mid - half
+        t_hi  = t_mid + half
+        t_lo_list.append(t_lo)
+        t_hi_list.append(t_hi)
+        t_mid_list.append(t_mid)
+
+        dets = conn.execute(
+            """SELECT id, lat, lon, confidence, dark, matched_mmsi, match_dist_m
+               FROM detections
+               WHERE scene_name = ? AND lat IS NOT NULL AND dark IS NOT NULL""",
+            (scene_name,)
+        ).fetchall()
+
+        dark    = [d for d in dets if d[4] == 1]
+        matched = [d for d in dets if d[4] == 0]
+        all_dark.extend(dark)
+        all_matched.extend(matched)
+        all_lats.extend(d[1] for d in dets)
+        all_lons.extend(d[2] for d in dets)
+
+        # chips
+        date8     = scene_date_str(scene_name)
+        chips_dir = Path(f"dark_chips_{date8}")
+        for d in dark:
+            det_id, lat, lon = d[0], d[1], d[2]
+            fname = chips_dir / f"dark_{det_id:04d}_{lat:.4f}N_{lon:.4f}E.png"
+            if fname.exists():
+                all_chips[det_id] = base64.b64encode(fname.read_bytes()).decode("ascii")
+
+        # SAR overlay for this slice
+        sar_path = find_sar_overlay(sar_dir, scene_name)
+        if sar_path:
+            b64, bounds = load_sar_overlay(sar_path)
+            if b64 and bounds:
+                sar_overlays.append({"b64": b64, "bounds": bounds})
+                print(f"  SAR overlay : {sar_path.name}  ({len(b64) >> 10} KB b64)")
+
+        n_dark = len(dark); n_match = len(matched)
+        print(f"  {scene_name[:55]}  →  {n_dark} dark  |  {n_match} matched")
+
+    if not all_lats:
+        print(f"  No detections found across {len(scene_names)} slice(s) — skipping pass.")
+        return None
+
+    # ── combined geometry ─────────────────────────────────────────────────────
+    t_lo_combined  = min(t_lo_list)
+    t_hi_combined  = max(t_hi_list)
+    t_mid_combined = sum(t_mid_list) / len(t_mid_list)
+    lat_min = min(all_lats) - BBOX_PAD
+    lat_max = max(all_lats) + BBOX_PAD
+    lon_min = min(all_lons) - BBOX_PAD
+    lon_max = max(all_lons) + BBOX_PAD
+    clat    = sum(all_lats) / len(all_lats)
+    clon    = sum(all_lons) / len(all_lons)
+
+    # ── AIS tracks (query combined bounding box + time window) ────────────────
     rows = conn.execute(
         """SELECT mmsi, lat, lon, ts_epoch
            FROM positions
@@ -143,11 +219,10 @@ def load_scene(conn, scene_name: str, hours: float, thin_min: int,
              AND lat BETWEEN ? AND ?
              AND lon BETWEEN ? AND ?
            ORDER BY mmsi, ts_epoch""",
-        (t_lo, t_hi, lat_min, lat_max, lon_min, lon_max)
+        (t_lo_combined, t_hi_combined, lat_min, lat_max, lon_min, lon_max)
     ).fetchall()
 
-    thin_sec = thin_min * 60
-    tracks   = {}
+    tracks = {}
     for mmsi, lat, lon, ts in rows:
         if mmsi not in tracks:
             tracks[mmsi] = []
@@ -173,53 +248,40 @@ def load_scene(conn, scene_name: str, hours: float, thin_min: int,
             "pings":     pings,
         })
 
-    # ── radar detections ──────────────────────────────────────────────────────
+    date8 = scene_date_str(scene_names[0])
+    n_slices = len(scene_names)
+
     detections_js = {
-        "scene": scene_name,
-        "t_mid": t_mid,
-        "time":  fmt_utc(t_mid),
+        "scene": f"{n_slices} slice(s)",
+        "t_mid": t_mid_combined,
+        "time":  fmt_utc(t_mid_combined),
         "dark":  [{"id": d[0], "lat": d[1], "lon": d[2],
-                   "conf": round(d[3], 2)} for d in dark_dets],
+                   "conf": round(d[3], 2)} for d in all_dark],
         "matched": [{"id": d[0], "lat": d[1], "lon": d[2],
                      "conf": round(d[3], 2), "mmsi": d[5],
-                     "name": vessel_names.get(d[5])} for d in matched_dets],
+                     "name": vessel_names.get(d[5])} for d in all_matched],
     }
 
-    # ── dark chips ────────────────────────────────────────────────────────────
-    date8    = scene_date_str(scene_name)
-    chips_dir = Path(f"dark_chips_{date8}")
-    chips = {}
-    for d in dark_dets:
-        det_id, lat, lon = d[0], d[1], d[2]
-        fname = chips_dir / f"dark_{det_id:04d}_{lat:.4f}N_{lon:.4f}E.png"
-        if fname.exists():
-            chips[det_id] = base64.b64encode(fname.read_bytes()).decode("ascii")
-
-    # ── SAR overlay ───────────────────────────────────────────────────────────
-    sar_b64, sar_bounds = load_sar_overlay(sar_path)
-    if sar_b64:
-        print(f"  SAR overlay : {sar_path.name}  ({len(sar_b64) >> 10} KB b64)")
-
-    print(f"  {len(tracks_clean)} AIS tracks  |  "
-          f"{len(dark_dets)} dark  |  {len(matched_dets)} matched  |  "
-          f"{len(chips)} chips")
+    print(f"  → Combined: {len(tracks_clean)} AIS tracks  |  "
+          f"{len(all_dark)} dark  |  {len(all_matched)} matched  |  "
+          f"{len(all_chips)} chips  |  {len(sar_overlays)} SAR overlay(s)")
 
     return {
-        "scene":      scene_name,
-        "date8":      date8,
-        "t_lo":       t_lo,
-        "t_hi":       t_hi,
-        "t_mid":      t_mid,
-        "thin_sec":   thin_sec,
-        "center":     [clat, clon],
-        "tracks":     tracks_js,
-        "detections": detections_js,
-        "chips":      chips,
-        "sar_b64":    sar_b64,
-        "sar_bounds": sar_bounds,
-        "dark_count":    len(dark_dets),
-        "matched_count": len(matched_dets),
-        "pass_time":  fmt_utc(t_mid),
+        "scenes":        scene_names,
+        "date8":         date8,
+        "t_lo":          t_lo_combined,
+        "t_hi":          t_hi_combined,
+        "t_mid":         t_mid_combined,
+        "thin_sec":      thin_sec,
+        "center":        [clat, clon],
+        "tracks":        tracks_js,
+        "detections":    detections_js,
+        "chips":         all_chips,
+        "sar_overlays":  sar_overlays,   # list of {b64, bounds} — one per slice
+        "dark_count":    len(all_dark),
+        "matched_count": len(all_matched),
+        "n_slices":      n_slices,
+        "pass_time":     fmt_utc(t_mid_combined),
     }
 
 
@@ -389,7 +451,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
 
   var aisGroup   = L.layerGroup().addTo(map);
   var radarGroup = L.layerGroup().addTo(map);
-  var sarLayer   = null;
+  var sarLayers  = [];   // one imageOverlay per SAR slice
 
   var TRAIL_SEC = 30 * 60;
 
@@ -529,26 +591,30 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   var sarOpacity = 0.75;
   document.getElementById('sar-opacity').addEventListener('input', function() {
     sarOpacity = parseFloat(this.value);
-    if (sarLayer) sarLayer.setOpacity(sarOpacity);
+    sarLayers.forEach(function(l) { l.setOpacity(sarOpacity); });
   });
   document.getElementById('tog-sar').addEventListener('change', function() {
-    if (!sarLayer) return;
-    if (this.checked) map.addLayer(sarLayer);
-    else map.removeLayer(sarLayer);
+    var show = this.checked;
+    sarLayers.forEach(function(l) {
+      if (show) map.addLayer(l); else map.removeLayer(l);
+    });
   });
 
   function updateSarOverlay(sc) {
-    if (sarLayer) { map.removeLayer(sarLayer); sarLayer = null; }
-    if (sc.sar_b64 && sc.sar_bounds) {
-      var b = sc.sar_bounds;
-      sarLayer = L.imageOverlay(
-        'data:image/png;base64,' + sc.sar_b64,
+    // remove old SAR layers
+    sarLayers.forEach(function(l) { map.removeLayer(l); });
+    sarLayers = [];
+    var show = document.getElementById('tog-sar').checked;
+    (sc.sar_overlays || []).forEach(function(ov) {
+      var b = ov.bounds;
+      var layer = L.imageOverlay(
+        'data:image/png;base64,' + ov.b64,
         [[b.lat_min, b.lon_min], [b.lat_max, b.lon_max]],
         {opacity: sarOpacity}
       );
-      if (document.getElementById('tog-sar').checked)
-        sarLayer.addTo(map);
-    }
+      sarLayers.push(layer);
+      if (show) layer.addTo(map);
+    });
   }
 
   // ════════════════════════════════════════════════════════════════════════════
@@ -667,13 +733,17 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
       ? '<span class="cal-badge badge-sar">SAR</span>'
       : '';
 
+    var sliceBadge = sc.n_slices > 1
+      ? '<span class="cal-badge" style="background:#8e44ad22;color:#8e44ad;border:1px solid #8e44ad55">' + sc.n_slices + ' slices</span>'
+      : '';
+
     card.innerHTML =
       '<div class="cal-date">' + dateLabel + '</div>' +
       '<div class="cal-time">📡 ' + timeLabel2 + '</div>' +
       '<div class="cal-stats">' +
         '<span class="cal-badge badge-dark">' + sc.dark_count + ' dark</span>' +
         '<span class="cal-badge badge-matched">' + sc.matched_count + ' matched</span>' +
-        sarBadge +
+        sarBadge + sliceBadge +
       '</div>';
 
     card.addEventListener('click', function() { loadScene(key); });
@@ -773,32 +843,49 @@ def main():
 
     conn = sqlite3.connect(args.db)
 
-    scenes_data  = {}   # date8 → scene dict
-    scene_order  = []   # date8 keys, newest first
+    # ── group scenes by absolute orbit (same orbit = same satellite pass) ─────
+    from collections import defaultdict
+    orbit_groups = defaultdict(list)   # orbit_key → [scene_name, ...]
 
     for scene_name in scene_list:
-        date8 = scene_date_str(scene_name)
-        print(f"\nLoading scene {date8} — {scene_name[:60]} ...")
+        orbit = extract_abs_orbit(scene_name)
+        orbit_groups[orbit].append(scene_name)
 
-        # resolve SAR overlay path
+    # sort slices within each pass by acquisition time (oldest first = southernmost)
+    for orbit in orbit_groups:
+        orbit_groups[orbit].sort(key=lambda n: parse_scene_time(n)[0] or 0)
+
+    # sort passes by time (oldest first, reversed later for newest-first calendar)
+    sorted_orbits = sorted(orbit_groups.keys(),
+                           key=lambda o: parse_scene_time(orbit_groups[o][0])[0] or 0)
+
+    scenes_data = {}   # orbit_key → pass dict
+    scene_order = []   # orbit keys, newest first
+
+    sar_dir_resolved = args.sar_dir if not args.sar_overlay else None
+
+    for orbit in sorted_orbits:
+        slices = orbit_groups[orbit]
+        date8  = scene_date_str(slices[0])
+        n      = len(slices)
+        print(f"\nLoading pass orbit={orbit}  ({n} slice(s), {date8}) ...")
+
+        # single-scene backward compat: use explicit --sar-overlay if only one scene total
         if args.sar_overlay and len(scene_list) == 1:
-            sar_path = args.sar_overlay
-        elif args.sar_dir:
-            sar_path = args.sar_dir / f"sar_overlay_{date8}.png"
-        else:
-            sar_path = None
+            sar_dir_resolved = args.sar_overlay.parent
 
-        sc = load_scene(conn, scene_name, args.hours, args.thin, sar_path)
+        sc = load_pass(conn, slices, args.hours, args.thin, sar_dir_resolved)
         if sc is None:
             continue
 
         sc["display_date"] = fmt_display_date(date8)
+        sc["orbit"]        = orbit
 
-        scenes_data[date8] = sc
-        scene_order.append(date8)
+        scenes_data[orbit] = sc
+        scene_order.append(orbit)
 
     if not scenes_data:
-        raise SystemExit("No scenes with valid detections found — nothing to render.")
+        raise SystemExit("No passes with valid detections found — nothing to render.")
 
     # newest first in calendar
     scene_order.reverse()

@@ -61,11 +61,13 @@ def main():
                     help="Output image width in pixels (height scaled to match)")
     args = ap.parse_args()
 
-    date_match = re.search(r'_(\d{8})T', args.scene)
-    date_str   = date_match.group(1) if date_match else "unknown"
+    # Use full start timestamp (e.g. 20260512T061448) so multiple slices
+    # from the same day don't overwrite each other.
+    ts_match = re.search(r'_(\d{8}T\d{6})_', args.scene)
+    ts_str   = ts_match.group(1) if ts_match else "unknown"
     SAR_OVERLAYS_DIR.mkdir(parents=True, exist_ok=True)
-    out_png    = SAR_OVERLAYS_DIR / f"sar_overlay_{date_str}.png"
-    out_json   = SAR_OVERLAYS_DIR / f"sar_overlay_{date_str}.json"
+    out_png  = SAR_OVERLAYS_DIR / f"sar_overlay_{ts_str}.png"
+    out_json = SAR_OVERLAYS_DIR / f"sar_overlay_{ts_str}.json"
 
     tif = locate_measurement(args.safe, args.pol)
     print(f"SAR image : {tif.name}")
