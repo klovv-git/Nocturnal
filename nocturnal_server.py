@@ -15,12 +15,16 @@ Requirements:
 """
 
 import json
+import os
 import subprocess
 import sys
 import threading
 import webbrowser
 from pathlib import Path
 from queue import Empty, Queue
+
+# Force UTF-8 for all child processes on Windows
+os.environ.setdefault("PYTHONIOENCODING", "utf-8")
 
 try:
     from flask import Flask, Response, jsonify, request, stream_with_context
