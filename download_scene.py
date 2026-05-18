@@ -185,10 +185,11 @@ def fmt_scene(idx: int, product: dict) -> str:
     size_b  = product.get("ContentLength", 0) or 0
     size_mb = size_b >> 20
     pol     = _attr(product, "polarisationChannels")
-    sat     = _attr(product, "platformSerialIdentifier")  # e.g. S1A, S1D
+    sat     = _attr(product, "platformSerialIdentifier")
+    orbit   = _attr(product, "relativeOrbitNumber")
     return (
         f"  [{idx}] {name[:72]}\n"
-        f"       {start[:16]} UTC  |  sat={sat}  pol={pol}  |  {size_mb} MB"
+        f"       {start[:16]} UTC  |  sat={sat}  orbit={orbit}  pol={pol}  |  {size_mb} MB"
     )
 
 
@@ -221,6 +222,8 @@ def main():
                     help="AOI as WKT polygon in lon/lat (default: English Channel)")
     ap.add_argument("--limit",    type=int, default=10,
                     help="Max number of search results (default: 10)")
+    ap.add_argument("--orbit",    type=int, default=None,
+                    help="Only show scenes with this relative orbit number (use to lock onto a known-good track)")
     ap.add_argument("--select",   type=int, default=None,
                     help="Auto-select result at this index and download immediately")
     ap.add_argument("--username", default=None, help="CDSE username")
@@ -240,6 +243,15 @@ def main():
     if not scenes:
         print("No scenes found. Try an earlier --after date.")
         return
+
+    # filter by relative orbit number if requested
+    if args.orbit is not None:
+        scenes = [s for s in scenes
+                  if _attr(s, "relativeOrbitNumber") == str(args.orbit)]
+        if not scenes:
+            print(f"No scenes found with relative orbit {args.orbit}.")
+            return
+        print(f"Filtered to orbit {args.orbit}: {len(scenes)} scene(s)\n")
 
     print(f"\nFound {len(scenes)} scene(s):\n")
     for i, s in enumerate(scenes):

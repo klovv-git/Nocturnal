@@ -41,6 +41,16 @@ REVIEWS_DIR       = Path("reviews")         # chip review JSON files
 # ── Database ──────────────────────────────────────────────────────────────────
 DB_PATH = Path("ais_memory.db")
 
+# ── Known good relative orbit numbers ────────────────────────────────────────
+# These orbits are confirmed to pass over the English Channel / southern North
+# Sea water area. Add more as you discover them.
+# Find the orbit number by running: python download_scene.py --after <date>
+# and looking at the orbit= column in the results.
+# Example: python download_scene.py --after 2026-05-19 --orbit 30
+KNOWN_ORBITS = [
+    # 30,   # ← add confirmed orbit numbers here after testing
+]
+
 # ── Pipeline defaults ─────────────────────────────────────────────────────────
 TIMELINE_HOURS  = 12    # AIS window around each satellite pass (hours)
 THIN_MINUTES    = 5     # keep one AIS ping per vessel per N minutes
