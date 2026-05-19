@@ -174,6 +174,10 @@ PANEL_HTML = r"""
         <div class="np-row">
           <span class="np-label">Pass date</span>
           <input class="np-input" id="np-date" type="date">
+        </div>
+        <div class="np-row">
+          <span class="np-label">Orbit <span style="color:#556;font-weight:normal">(optional)</span></span>
+          <input class="np-input" id="np-orbit" type="number" placeholder="e.g. 52 — from Copernicus Browser">
           <button class="np-btn" id="np-search-btn" onclick="npSearch()">🔍 Search</button>
         </div>
         <div id="np-scene-count"></div>
@@ -260,10 +264,12 @@ PANEL_HTML = r"""
     d.setDate(d.getDate() + 1);
     var before = d.toISOString().slice(0, 10);
 
+    var orbit = document.getElementById('np-orbit').value.trim();
+
     fetch('/api/search', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ after: after, before: before })
+      body: JSON.stringify({ after: after, before: before, orbit: orbit || null })
     })
       .then(r => r.json())
       .then(function (data) {
@@ -410,8 +416,12 @@ def api_search():
     data   = request.json or {}
     after  = data.get("after",  "2026-01-01")
     before = data.get("before", None)
+    orbit  = str(data.get("orbit", "") or "").strip()
     try:
-        scenes = search_scenes(after, before=before, wkt=AOI_WKT, limit=15)
+        scenes = search_scenes(after, before=before, wkt=AOI_WKT, limit=20)
+        # filter by relative orbit number if provided
+        if orbit:
+            scenes = [s for s in scenes if _attr(s, "relativeOrbitNumber") == orbit]
         results = [
             {
                 "name":    s.get("Name", "?"),
