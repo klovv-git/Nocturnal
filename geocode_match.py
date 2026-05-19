@@ -60,10 +60,10 @@ try:
         """Return True if the point is over ocean (not land)."""
         return bool(_globe.is_ocean(lat, lon))
 except ImportError:
-    # Fallback: rough English Channel bounding box.
-    # Good enough if global-land-mask isn't installed.
+    # Fallback: AOI bounding box from config (driven by aoi.geojson).
+    from config import AOI_LAT_MIN, AOI_LAT_MAX, AOI_LON_MIN, AOI_LON_MAX
     def is_ocean(lat: float, lon: float) -> bool:
-        return (49.0 <= lat <= 51.5) and (-6.0 <= lon <= 2.5)
+        return (AOI_LAT_MIN <= lat <= AOI_LAT_MAX) and (AOI_LON_MIN <= lon <= AOI_LON_MAX)
 
 
 def _gcp_val(v) -> float:

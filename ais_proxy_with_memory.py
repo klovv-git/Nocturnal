@@ -18,6 +18,7 @@ import os
 import websockets  # type: ignore
 
 from ais_store import AISStore
+from config import AOI_LAT_MIN, AOI_LAT_MAX, AOI_LON_MIN, AOI_LON_MAX
 
 
 UPSTREAM   = "wss://stream.aisstream.io/v0/stream"
@@ -25,10 +26,10 @@ LOCAL_PORT = 9000
 
 API_KEY = "69d038ee63578ddc6d01327665ac6c73f1852596"
 
-# English Channel (unchanged from ais_proxy.py)
+# Area of interest — driven by aoi.geojson (or config.py fallback)
 SUBSCRIPTION = {
     "APIKey": API_KEY,
-    "BoundingBoxes": [[[48.3, -6.0], [51.5, 2.5]]],
+    "BoundingBoxes": [[[AOI_LAT_MIN, AOI_LON_MIN], [AOI_LAT_MAX, AOI_LON_MAX]]],
 }
 
 # Shared DB path. Keep it alongside this script so it works the same way
@@ -54,7 +55,7 @@ async def proxy(browser_ws):
         print(f"    Using browser subscription: {json.dumps(sub)[:120]}...")
     except (asyncio.TimeoutError, Exception):
         sub = SUBSCRIPTION
-        print("    Using default subscription (English Channel)")
+        print("    Using default subscription (AOI from config)")
 
     upstream_ws = None
     try:
@@ -105,7 +106,7 @@ async def main():
     print(f"  Local:    ws://localhost:{LOCAL_PORT}")
     print(f"  Upstream: {UPSTREAM}")
     print(f"  DB:       {DB_PATH}")
-    print( "  Area:     English Channel (48.3N-51.5N, 6W-2.5E)")
+    print(f"  Area:     {AOI_LAT_MIN:.2f}–{AOI_LAT_MAX:.2f}°N, {AOI_LON_MIN:.2f}–{AOI_LON_MAX:.2f}°E")
     print()
     print("Waiting for browser connections...")
     print("─" * 50)
