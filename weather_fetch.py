@@ -50,7 +50,9 @@ import urllib.request
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
+import math as _math
 from weather_store import WeatherStore
+import config as _cfg
 
 # ── Endpoints ──────────────────────────────────────────────────────────────────
 
@@ -67,7 +69,7 @@ ENDPOINTS: Dict[str, str] = {
 WEATHER_PARAMS = ",".join([
     "waveHeight", "waveDirection", "wavePeriod",
     "swellHeight", "swellDirection", "swellPeriod",
-    "windSpeed", "windDirection", "windGust",
+    "windSpeed", "windDirection", "gust",
     "visibility", "cloudCover", "airTemperature",
     "pressure", "currentSpeed", "currentDirection",
     "precipitation", "humidity", "seaLevel",
@@ -75,38 +77,35 @@ WEATHER_PARAMS = ",".join([
 
 BIO_PARAMS = ",".join([
     "chlorophyll", "phytoplankton", "salinity",
-    "waterTemperature", "iceCover", "oxygen",
-    "nitrate", "phosphate", "silicate",
+    "oxygen", "nitrate", "phosphate", "silicate",
 ])
 
 # Tide and extremes endpoints don't take a params list.
 
-# ── 18-point grid ─────────────────────────────────────────────────────────────
+# ── Grid — auto-generated from AOI bounds in config.py ────────────────────────
 #
-# Three latitude rows × six longitude columns.
-# Row labels: S = 49.0 °N (southern/French side)
-#             C = 50.0 °N (central channel)
-#             N = 51.0 °N (northern/English side)
-# Column labels reflect broad geographic zones.
+# 1° latitude spacing, 1.5° longitude spacing across the AOI bounding box.
+# Updating aoi.geojson and rerunning will automatically adjust the grid.
 
-_LAT_ROWS  = [49.0, 50.0, 51.0]
-_LON_COLS  = [-5.5, -3.5, -1.5, 0.0, 1.25, 2.25]
-_ROW_TAG   = {49.0: "S", 50.0: "C", 51.0: "N"}
-_COL_TAG   = {
-    -5.5: "WApproach",
-    -3.5: "WChannel",
-    -1.5: "ChanW",
-     0.0: "ChanE",
-    1.25: "EChannel",
-    2.25: "Dover",
-}
+def _build_grid(lat_min: float, lat_max: float,
+                lon_min: float, lon_max: float) -> List[Tuple[float, float, str]]:
+    lats, lat = [], float(_math.ceil(lat_min))
+    while lat <= _math.floor(lat_max):
+        lats.append(lat); lat += 1.0
 
-GRID: List[Tuple[float, float, str]] = [
-    (lat, lon, f"{_COL_TAG[lon]}_{_ROW_TAG[lat]}")
-    for lat in _LAT_ROWS
-    for lon in _LON_COLS
-]
-# → 18 entries: WApproach_S … Dover_N
+    lons, lon = [], round(_math.ceil(lon_min * 2) / 2, 1)
+    while lon <= lon_max:
+        lons.append(lon); lon = round(lon + 1.5, 2)
+
+    return [
+        (lat, lon, f"lat{lat:.0f}_lon{lon:+.1f}")
+        for lat in lats for lon in lons
+    ]
+
+GRID: List[Tuple[float, float, str]] = _build_grid(
+    _cfg.AOI_LAT_MIN, _cfg.AOI_LAT_MAX,
+    _cfg.AOI_LON_MIN, _cfg.AOI_LON_MAX,
+)
 
 # ── Timing ─────────────────────────────────────────────────────────────────────
 
@@ -117,9 +116,8 @@ INTER_REQ_SLEEP = 0.5    # seconds between individual API calls (be polite)
 
 # ── Default DB path ────────────────────────────────────────────────────────────
 
-DEFAULT_DB = os.path.join(
-    os.path.dirname(os.path.abspath(__file__)), "weather.db"
-)
+DEFAULT_DB       = str(_cfg.WEATHER_DB_PATH)
+_DEFAULT_API_KEY = os.environ.get("STORMGLASS_API_KEY", "") or _cfg.STORMGLASS_API_KEY
 
 # ── Exceptions ─────────────────────────────────────────────────────────────────
 
@@ -412,8 +410,8 @@ def _parse_args() -> argparse.Namespace:
         epilog=__doc__,
     )
     p.add_argument("--api-key",
-                   default=os.environ.get("STORMGLASS_API_KEY", ""),
-                   help="Storm Glass API key (or set STORMGLASS_API_KEY env var)")
+                   default=_DEFAULT_API_KEY,
+                   help="Storm Glass API key (config.py, env var, or this flag)")
     p.add_argument("--db",
                    default=os.environ.get("NOCTURNAL_WEATHER_DB", DEFAULT_DB),
                    help=f"Path to weather.db (default: {DEFAULT_DB})")

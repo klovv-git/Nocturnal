@@ -28,7 +28,7 @@ import datetime
 import calendar
 from pathlib import Path
 
-from config import DB_PATH, TIMELINE_HOURS, THIN_MINUTES, BBOX_PAD, SAR_OVERLAYS_DIR, SENTINEL_DATA_DIR
+from config import DB_PATH, WEATHER_DB_PATH, TIMELINE_HOURS, THIN_MINUTES, BBOX_PAD, SAR_OVERLAYS_DIR, SENTINEL_DATA_DIR
 
 DEFAULT_DB = DB_PATH
 OUT_FILE   = Path("ais_timeline_map.html")
@@ -116,6 +116,54 @@ def load_sar_overlay(path: Path):
     b64     = base64.b64encode(path.read_bytes()).decode("ascii")
     bounds  = json.loads(bounds_file.read_text())
     return b64, bounds
+
+
+# ── weather loading ───────────────────────────────────────────────────────
+
+def load_weather_for_scene(t_lo, t_hi):
+    """
+    Query weather.db for observations in [t_lo, t_hi].
+    Returns a compact list of arrays: [lat, lon, ts_epoch, wind_speed, wind_dir,
+    wind_gust, wave_height, wave_dir, wave_period, visibility, air_temp, pressure,
+    current_speed, current_dir]
+    Returns [] if weather.db is missing or empty.
+    """
+    db = Path(str(WEATHER_DB_PATH))
+    if not db.exists():
+        return []
+    try:
+        wconn = sqlite3.connect(str(db))
+        rows  = wconn.execute("""
+            SELECT lat, lon, ts_epoch,
+                   wind_speed, wind_dir, wind_gust,
+                   wave_height, wave_dir, wave_period,
+                   visibility, air_temp, pressure,
+                   current_speed, current_dir
+            FROM weather_obs
+            WHERE ts_epoch BETWEEN ? AND ?
+            ORDER BY ts_epoch
+        """, (t_lo, t_hi)).fetchall()
+        wconn.close()
+        result = []
+        for r in rows:
+            result.append([
+                round(r[0], 3), round(r[1], 3), int(r[2]),
+                round(r[3], 2) if r[3] is not None else None,
+                round(r[4], 1) if r[4] is not None else None,
+                round(r[5], 2) if r[5] is not None else None,
+                round(r[6], 2) if r[6] is not None else None,
+                round(r[7], 1) if r[7] is not None else None,
+                round(r[8], 1) if r[8] is not None else None,
+                round(r[9], 1) if r[9] is not None else None,
+                round(r[10], 1) if r[10] is not None else None,
+                round(r[11], 1) if r[11] is not None else None,
+                round(r[12], 2) if r[12] is not None else None,
+                round(r[13], 1) if r[13] is not None else None,
+            ])
+        return result
+    except Exception as e:
+        print(f"  Weather DB load failed: {e}")
+        return []
 
 
 # ── per-pass data loading ─────────────────────────────────────────────────────
@@ -396,6 +444,14 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
       display: flex; align-items: center; gap: 6px;
       font-size: 11px; color: #666; margin-top: 2px;
     }
+
+    /* weather block inside vessel popup */
+    .wx-block { margin-top: 10px; padding-top: 8px; border-top: 1px solid #e0e0e0; font-size: 12px; }
+    .wx-block b { display: block; margin-bottom: 5px; color: #444; font-size: 13px; }
+    .wx-row { display: flex; justify-content: space-between; padding: 2px 0; }
+    .wx-row span:first-child { color: #888; padding-right: 12px; }
+    .wx-row span:last-child  { font-weight: 500; text-align: right; }
+    .wx-nodata { color: #aaa; font-style: italic; }
   </style>
 </head>
 <body>
@@ -521,6 +577,58 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   }
 
   // ════════════════════════════════════════════════════════════════════════════
+  //  Weather helpers
+  // ════════════════════════════════════════════════════════════════════════════
+  // obs row: [lat, lon, ts_epoch, wind_speed, wind_dir, wind_gust,
+  //           wave_height, wave_dir, wave_period,
+  //           visibility, air_temp, pressure, current_speed, current_dir]
+  function nearestWx(lat, lon, t, obs) {
+    if (!obs || !obs.length) return null;
+    var best = null, bestScore = 1e9;
+    for (var i = 0; i < obs.length; i++) {
+      var o = obs[i];
+      var dt = Math.abs(o[2] - t);
+      if (dt > 7200) continue;  // ignore obs more than 2h away
+      var dlat = o[0] - lat, dlon = o[1] - lon;
+      var distKm = Math.sqrt(dlat*dlat + dlon*dlon) * 111;
+      var score = distKm + dt / 3600;
+      if (score < bestScore) { bestScore = score; best = o; }
+    }
+    return best;
+  }
+
+  function wxHtml(w) {
+    function f(v, unit, dec) {
+      return (v != null) ? (+v).toFixed(dec || 0) + unit : '—';
+    }
+    function dir(d) {
+      if (d == null) return '';
+      return ' ' + ['N','NE','E','SE','S','SW','W','NW'][Math.round(d / 45) % 8];
+    }
+    if (!w) {
+      return '<div class="wx-block"><b>⛅ Weather</b>' +
+             '<span class="wx-nodata">No weather data near this position</span></div>';
+    }
+    var windStr = f(w[3], ' m/s', 1) + dir(w[4]);
+    if (w[5] != null) windStr += ' · gust ' + f(w[5], ' m/s', 1);
+    var waveStr = f(w[6], 'm', 1) + dir(w[7]);
+    if (w[8] != null) waveStr += ' · ' + f(w[8], 's', 0) + ' period';
+    var rows = [
+      ['Wind',       windStr],
+      ['Waves',      waveStr],
+      ['Visibility', f(w[9],  'km', 0)],
+      ['Air temp',   f(w[10], '°C', 1)],
+      ['Pressure',   f(w[11], ' hPa', 0)],
+    ];
+    if (w[12] != null) rows.push(['Current', f(w[12], ' m/s', 1) + dir(w[13])]);
+    var html = '<div class="wx-block"><b>⛅ Weather at vessel</b>';
+    rows.forEach(function(r) {
+      html += '<div class="wx-row"><span>' + r[0] + '</span><span>' + r[1] + '</span></div>';
+    });
+    return html + '</div>';
+  }
+
+  // ════════════════════════════════════════════════════════════════════════════
   //  Build vessel markers for a scene
   // ════════════════════════════════════════════════════════════════════════════
   function buildVesselMarkers(tracks) {
@@ -533,17 +641,17 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
         radius: 5, color: '#3498db', fillColor: '#3498db',
         fillOpacity: 0.85, weight: 1.5
       });
-      var label = '<b>' + (t.name || 'Unknown vessel') + '</b><br>' +
+      var baseLabel = '<b>' + (t.name || 'Unknown vessel') + '</b><br>' +
         'MMSI: <a href="https://www.marinetraffic.com/en/ais/details/ships/mmsi:' +
         t.mmsi + '" target="_blank">' + t.mmsi + ' ↗</a>';
-      if (t.ship_type) label += '<br>Type: ' + t.ship_type;
-      if (t.callsign)  label += '<br>Callsign: ' + t.callsign;
-      if (t.imo)       label += '<br>IMO: ' + t.imo;
-      marker.bindPopup(label, {maxWidth: 280});
+      if (t.ship_type) baseLabel += '<br>Type: ' + t.ship_type;
+      if (t.callsign)  baseLabel += '<br>Callsign: ' + t.callsign;
+      if (t.imo)       baseLabel += '<br>IMO: ' + t.imo;
+      marker.bindPopup(baseLabel, {maxWidth: 320});
       marker.on('click', (function(mmsi) {
         return function() { selectVessel(mmsi); };
       })(t.mmsi));
-      vesselMarkers[t.mmsi] = { marker: marker, pings: t.pings };
+      vesselMarkers[t.mmsi] = { marker: marker, pings: t.pings, baseLabel: baseLabel };
 
       var trail = L.polyline([], {color:'#3498db', weight:1.5, opacity:0.4});
       vesselTrails[t.mmsi] = trail;
@@ -553,8 +661,14 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   function selectVessel(mmsi) {
     selectedMmsi = (selectedMmsi === mmsi) ? null : mmsi;
     update();
-    if (selectedMmsi && vesselMarkers[mmsi])
-      vesselMarkers[mmsi].marker.openPopup();
+    if (selectedMmsi && vesselMarkers[mmsi]) {
+      var data = vesselMarkers[mmsi];
+      var pos  = getPos(data.pings, currentTime());
+      var sc   = SCENES[activeDateKey];
+      var wx   = pos ? nearestWx(pos[0], pos[1], currentTime(), sc.weather || []) : null;
+      data.marker.setPopupContent(data.baseLabel + wxHtml(wx));
+      data.marker.openPopup();
+    }
   }
 
   // ════════════════════════════════════════════════════════════════════════════
@@ -909,6 +1023,9 @@ def main():
 
         sc["display_date"] = fmt_display_date(date8)
         sc["orbit"]        = orbit
+        sc["weather"]      = load_weather_for_scene(sc["t_lo"], sc["t_hi"])
+        if sc["weather"]:
+            print(f"  Weather obs  : {len(sc['weather'])} rows from weather.db")
 
         scenes_data[orbit] = sc
         scene_order.append(orbit)

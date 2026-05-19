@@ -15,11 +15,11 @@ import json
 from pathlib import Path
 
 # ── Area of interest ──────────────────────────────────────────────────────────
-# Default: English Channel + southern North Sea
-AOI_LAT_MIN =  49.0
-AOI_LAT_MAX =  53.0
-AOI_LON_MIN =  -2.5
-AOI_LON_MAX =   6.5
+# Fallback bounding box — overridden below if aoi.geojson is present.
+AOI_LAT_MIN =  47.8
+AOI_LAT_MAX =  51.8
+AOI_LON_MIN =  -5.8
+AOI_LON_MAX =   4.0
 
 def _geojson_to_wkt(path: Path) -> str:
     """Convert the first polygon in a GeoJSON file to a WKT string."""
@@ -42,11 +42,21 @@ def _default_wkt() -> str:
         f"{AOI_LON_MIN} {AOI_LAT_MIN}))"
     )
 
-# Load aoi.geojson if present, otherwise fall back to bounding box
+# Load aoi.geojson if present — overrides both AOI_WKT and the bounding box constants
 _AOI_GEOJSON = Path(__file__).parent / "aoi.geojson"
 if _AOI_GEOJSON.exists():
     AOI_WKT = _geojson_to_wkt(_AOI_GEOJSON)
-    print(f"[config] AOI loaded from {_AOI_GEOJSON.name}")
+    _gj = json.loads(_AOI_GEOJSON.read_text())
+    if _gj.get("type") == "FeatureCollection": _gj = _gj["features"][0]
+    if _gj.get("type") == "Feature":           _gj = _gj["geometry"]
+    _coords     = _gj["coordinates"][0]
+    AOI_LON_MIN = min(c[0] for c in _coords)
+    AOI_LON_MAX = max(c[0] for c in _coords)
+    AOI_LAT_MIN = min(c[1] for c in _coords)
+    AOI_LAT_MAX = max(c[1] for c in _coords)
+    print(f"[config] AOI loaded from {_AOI_GEOJSON.name}  "
+          f"({AOI_LAT_MIN:.2f}–{AOI_LAT_MAX:.2f}°N, "
+          f"{AOI_LON_MIN:.2f}–{AOI_LON_MAX:.2f}°E)")
 else:
     AOI_WKT = _default_wkt()
 
@@ -57,7 +67,13 @@ CHIPS_DIR_PREFIX  = "dark_chips_"           # per-scene chip folders: dark_chips
 REVIEWS_DIR       = Path("reviews")         # chip review JSON files
 
 # ── Database ──────────────────────────────────────────────────────────────────
-DB_PATH = Path("ais_memory.db")
+DB_PATH         = Path("ais_memory.db")
+WEATHER_DB_PATH = Path("weather.db")
+
+# ── API keys ──────────────────────────────────────────────────────────────────
+# Set your Storm Glass key here, or leave empty and use the
+# STORMGLASS_API_KEY environment variable instead.
+STORMGLASS_API_KEY = "fa31f8e8-90cc-11ed-bce5-0242ac130002-fa31f956-90cc-11ed-bce5-0242ac130002"
 
 # ── Known good pass times (UTC hour) ─────────────────────────────────────────
 # Sentinel-1 passes over the English Channel / southern North Sea at consistent
