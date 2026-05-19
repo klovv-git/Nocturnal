@@ -836,10 +836,17 @@ def main():
 
     # normalise to a list of scene names
     if args.all_scenes:
-        scene_list = sorted(p.name for p in SENTINEL_DATA_DIR.glob("*.SAFE"))
+        # only include scenes that have a SAR overlay — guarantees they were processed
+        scene_list = []
+        for p in sorted(SENTINEL_DATA_DIR.glob("*.SAFE")):
+            m = re.search(r'_(\d{8}T\d{6})_', p.name)
+            if m:
+                overlay = SAR_OVERLAYS_DIR / f"sar_overlay_{m.group(1)}.png"
+                if overlay.exists():
+                    scene_list.append(p.name)
         if not scene_list:
-            raise SystemExit(f"No .SAFE folders found in {SENTINEL_DATA_DIR}")
-        print(f"--all: found {len(scene_list)} scene(s) in {SENTINEL_DATA_DIR}")
+            raise SystemExit(f"No processed scenes found in {SENTINEL_DATA_DIR} — run the pipeline first.")
+        print(f"--all: {len(scene_list)} processed scene(s) found")
     elif args.scene:
         scene_list = [args.scene]
     else:
