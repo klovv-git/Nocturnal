@@ -442,6 +442,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   // ════════════════════════════════════════════════════════════════════════════
   var SCENES      = __SCENES_JSON__;
   var SCENE_ORDER = __SCENE_ORDER_JSON__;
+  var AOI_GEOJSON = __AOI_GEOJSON__;
 
   // ════════════════════════════════════════════════════════════════════════════
   //  Map init
@@ -455,6 +456,17 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   var aisGroup   = L.layerGroup().addTo(map);
   var radarGroup = L.layerGroup().addTo(map);
   var sarLayers  = [];   // one imageOverlay per SAR slice
+
+  // ── AOI boundary ───────────────────────────────────────────────────────────
+  if (AOI_GEOJSON) {
+    L.geoJSON(AOI_GEOJSON, {
+      style: {
+        color: '#4a7aff', weight: 2, opacity: 0.5,
+        fill: true, fillColor: '#4a7aff', fillOpacity: 0.04,
+        dashArray: '6 5'
+      }
+    }).addTo(map);
+  }
 
   var TRAIL_SEC = 30 * 60;
 
@@ -911,9 +923,14 @@ def main():
     scenes_json = json.dumps(scenes_data)
     order_json  = json.dumps(scene_order)
 
+    # load AOI GeoJSON if available
+    _aoi_file = Path(__file__).parent / "aoi.geojson"
+    aoi_json  = _aoi_file.read_text(encoding="utf-8") if _aoi_file.exists() else "null"
+
     html = HTML_TEMPLATE \
         .replace("__SCENES_JSON__",      scenes_json) \
-        .replace("__SCENE_ORDER_JSON__", order_json)
+        .replace("__SCENE_ORDER_JSON__", order_json) \
+        .replace("__AOI_GEOJSON__",      aoi_json)
 
     OUT_FILE.write_text(html, encoding="utf-8")
     size_kb = OUT_FILE.stat().st_size >> 10
