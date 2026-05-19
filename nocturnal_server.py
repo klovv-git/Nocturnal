@@ -532,6 +532,8 @@ def _pipeline_thread(scenes: list, username: str, password: str):
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 bufsize=1,
             )
             rc = _stream_proc(proc)

@@ -159,10 +159,14 @@ def download_product(uuid: str, name: str, token: str, out_dir: Path) -> Path:
     with zipfile.ZipFile(out_zip) as z:
         z.extractall(out_dir)
 
-    # find the .SAFE folder
-    safe_dirs = sorted(out_dir.glob("*.SAFE"))
+    # find the .SAFE folder — prefer exact name match, fallback to most recently modified
+    expected = out_dir / f"{name}.SAFE"
+    if expected.exists():
+        print(f"Extracted: {expected}")
+        return expected
+    safe_dirs = list(out_dir.glob("*.SAFE"))
     if safe_dirs:
-        safe_dir = safe_dirs[-1]
+        safe_dir = max(safe_dirs, key=lambda p: p.stat().st_mtime)
         print(f"Extracted: {safe_dir}")
         return safe_dir
 
