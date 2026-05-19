@@ -3,34 +3,52 @@ config.py — shared constants for the NOCTURNAL pipeline.
 
 Edit this file to change the area of interest, database path, or other
 pipeline-wide settings. All scripts import from here.
+
+Area of interest:
+  Drop an aoi.geojson file in this folder to override the default AOI.
+  Easiest way to create one: draw your polygon at https://geojson.io,
+  then save as aoi.geojson next to this file.
+  If no aoi.geojson is found, the hardcoded bounding box below is used.
 """
 
+import json
 from pathlib import Path
 
 # ── Area of interest ──────────────────────────────────────────────────────────
-# English Channel + southern North Sea (Thames Estuary → Dutch/Belgian coast)
-#
-#   53°N  ┌─────────────────────────────────────┐
-#         │  southern North Sea                  │
-#         │  (Thames Est. / NL / BE coasts)      │
-#   51°N  │          ┌──────────────────────────┤
-#         │          │ Strait of Dover           │
-#   49°N  └──────────┴──────────────────────────┘
-#        -2.5°E                               6.5°E
-
+# Default: English Channel + southern North Sea
 AOI_LAT_MIN =  49.0
 AOI_LAT_MAX =  53.0
 AOI_LON_MIN =  -2.5
 AOI_LON_MAX =   6.5
 
-# WKT polygon for CDSE scene search (lon/lat order, SRID 4326)
-AOI_WKT = (
-    f"POLYGON(({AOI_LON_MIN} {AOI_LAT_MIN}, "
-    f"{AOI_LON_MAX} {AOI_LAT_MIN}, "
-    f"{AOI_LON_MAX} {AOI_LAT_MAX}, "
-    f"{AOI_LON_MIN} {AOI_LAT_MAX}, "
-    f"{AOI_LON_MIN} {AOI_LAT_MIN}))"
-)
+def _geojson_to_wkt(path: Path) -> str:
+    """Convert the first polygon in a GeoJSON file to a WKT string."""
+    gj = json.loads(path.read_text())
+    # unwrap FeatureCollection → Feature → Geometry
+    if gj.get("type") == "FeatureCollection":
+        gj = gj["features"][0]
+    if gj.get("type") == "Feature":
+        gj = gj["geometry"]
+    coords = gj["coordinates"][0]   # outer ring of first polygon
+    pairs  = ", ".join(f"{lon} {lat}" for lon, lat in coords)
+    return f"POLYGON(({pairs}))"
+
+def _default_wkt() -> str:
+    return (
+        f"POLYGON(({AOI_LON_MIN} {AOI_LAT_MIN}, "
+        f"{AOI_LON_MAX} {AOI_LAT_MIN}, "
+        f"{AOI_LON_MAX} {AOI_LAT_MAX}, "
+        f"{AOI_LON_MIN} {AOI_LAT_MAX}, "
+        f"{AOI_LON_MIN} {AOI_LAT_MIN}))"
+    )
+
+# Load aoi.geojson if present, otherwise fall back to bounding box
+_AOI_GEOJSON = Path(__file__).parent / "aoi.geojson"
+if _AOI_GEOJSON.exists():
+    AOI_WKT = _geojson_to_wkt(_AOI_GEOJSON)
+    print(f"[config] AOI loaded from {_AOI_GEOJSON.name}")
+else:
+    AOI_WKT = _default_wkt()
 
 # ── Folder layout ─────────────────────────────────────────────────────────────
 SENTINEL_DATA_DIR = Path("sentinel_data")   # downloaded .SAFE folders + zips
