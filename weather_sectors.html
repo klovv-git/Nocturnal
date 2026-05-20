@@ -171,6 +171,12 @@ function buildHexGrid(aoiCoords, rKm) {
 }
 
 const { grid: GRID, rows: ROWS } = buildHexGrid(AOI_COORDS, HEX_RADIUS_KM);
+
+// Manual supplement: NE corner gap — confirmed inside AOI (same logic as weather_fetch.py).
+const _ne = { lat:51.3, lon:3.0, name:`h${String(GRID.length).padStart(2,'0')}`, rowIdx:99, colIdx:99 };
+GRID.push(_ne);
+if (!ROWS.includes(_ne.lat)) { ROWS.push(_ne.lat); ROWS.sort((a,b)=>a-b); }
+
 document.getElementById('count').textContent = GRID.length;
 
 // ── Hex vertex generation ─────────────────────────────────────────────────────
