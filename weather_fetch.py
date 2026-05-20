@@ -158,10 +158,6 @@ GRID: List[Tuple[float, float, str]] = _build_hex_grid(
     ],
     radius_km=HEX_RADIUS_KM,
 )
-# Manual supplement: NE corner gap between h17/h18 and the AOI boundary.
-# The hex-grid algorithm places the next candidate at lon≈2.27°E which falls
-# just outside the AOI edge at that latitude; this point is confirmed inside.
-GRID.append((51.3, 3.0, f"h{len(GRID):02d}"))
 
 # ── Timing ─────────────────────────────────────────────────────────────────────
 
