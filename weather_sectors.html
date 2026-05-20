@@ -85,7 +85,7 @@ body { font-family:'SF Mono','Consolas','Menlo',monospace; background:#0a0e14; c
   <h2>⬡ Weather Sector Grid</h2>
   <div class="meta-row"><span class="lbl">Source</span>       <span class="val">aoi.geojson</span></div>
   <div class="meta-row"><span class="lbl">Shape</span>        <span class="val">Pointy-top hex</span></div>
-  <div class="meta-row"><span class="lbl">Radius</span>       <span class="val">55 km</span></div>
+  <div class="meta-row"><span class="lbl">Radius</span>       <span class="val">38.5 km</span></div>
   <div class="meta-row"><span class="lbl">Search radius</span><span class="val">100 km</span></div>
   <div class="meta-row"><span class="lbl">Poll interval</span><span class="val">30 min</span></div>
   <div class="meta-row"><span class="lbl">Sectors</span>      <span id="count" class="val">—</span></div>
@@ -114,7 +114,7 @@ const AOI_COORDS = [[-5.709316,50.145535],[-5.519276,49.082163],[-4.810943,47.91
   [-3.981677,47.94926],[-1.580258,48.410049],[-0.059935,49.014223],
   [1.633151,49.956951],[3.84453,51.531001],[0.734779,51.681217],[-5.709316,50.145535]];
 
-const HEX_RADIUS_KM = 55.0;
+const HEX_RADIUS_KM = 38.5;
 
 let aoiLayer = L.polygon(AOI_COORDS.map(c => [c[1],c[0]]), {
   color:'#7eb8da', weight:2, opacity:0.6,

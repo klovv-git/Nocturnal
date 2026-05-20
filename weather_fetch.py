@@ -89,7 +89,7 @@ BIO_PARAMS = ",".join([
 # are confirmed inside the AOI — no wasted API calls over land or outside the
 # study region.  HEX_RADIUS_KM controls granularity.
 
-HEX_RADIUS_KM = 55.0   # centre-to-vertex distance; tune to change sector count
+HEX_RADIUS_KM = 38.5   # centre-to-vertex distance; tune to change sector count
 
 
 def _point_in_poly(lat: float, lon: float,
