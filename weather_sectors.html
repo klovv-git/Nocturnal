@@ -1,0 +1,301 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>NOCTURNAL — Weather Sector Grid</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css"/>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+<style>
+* { margin:0; padding:0; box-sizing:border-box; }
+body { font-family:'SF Mono','Consolas','Menlo',monospace; background:#0a0e14; color:#c4cad4; }
+#map { width:100%; height:100vh; }
+
+.panel {
+  position:absolute; top:12px; right:12px; z-index:1000;
+  background:rgba(10,14,20,.94); border:1px solid #1e2a3a;
+  border-radius:8px; padding:14px; width:248px;
+  backdrop-filter:blur(12px);
+  max-height:calc(100vh - 24px); overflow-y:auto;
+}
+.panel h2 { font-size:12px; font-weight:600; color:#7eb8da; letter-spacing:.5px; margin-bottom:10px; }
+.sep { border:none; border-top:1px solid #1e2a3a; margin:9px 0; }
+.meta-row { display:flex; justify-content:space-between; font-size:10px; line-height:2; }
+.meta-row .lbl { color:#6b7785; }
+.meta-row .val { color:#c4cad4; font-weight:600; }
+
+.row-group  { margin-bottom:5px; }
+.row-header {
+  font-size:10px; font-weight:700; letter-spacing:.3px;
+  margin-bottom:2px; display:flex; align-items:center; gap:6px;
+}
+.row-swatch { width:8px; height:8px; border-radius:50%; flex-shrink:0; }
+.hex-row {
+  display:flex; justify-content:space-between; align-items:center;
+  font-size:9px; line-height:1.9; padding:0 4px 0 14px; color:#8a9aaa;
+  cursor:pointer; border-radius:3px; transition:background .1s;
+}
+.hex-row:hover { background:rgba(126,184,218,.08); color:#c4cad4; }
+.hex-row .coords { color:#4a5a6a; font-size:8.5px; }
+
+.btn-toggle {
+  width:100%; padding:6px 0; margin-top:4px;
+  background:#121820; border:1px solid #1e2a3a; border-radius:4px;
+  color:#6b7785; font-family:inherit; font-size:10px;
+  cursor:pointer; letter-spacing:.3px; transition:all .15s;
+}
+.btn-toggle:hover { background:#1a2530; color:#c4cad4; border-color:#3a5a7a; }
+.btn-toggle.active { background:#1a2d3d; color:#7eb8da; border-color:#2a4a6a; }
+
+.detail-panel {
+  position:absolute; bottom:12px; left:12px; z-index:1000;
+  background:rgba(10,14,20,.94); border:1px solid #1e2a3a;
+  border-radius:8px; padding:10px 14px; min-width:230px;
+  backdrop-filter:blur(12px); font-size:10px;
+}
+.detail-panel h3 { font-size:10px; color:#6b7785; margin-bottom:5px; }
+.si-name { font-size:12px; font-weight:700; color:#7eb8da; margin-bottom:5px; }
+.si-row  { display:flex; justify-content:space-between; gap:14px; line-height:1.9; }
+.si-lbl  { color:#4a5a6a; }
+.si-val  { color:#c4cad4; }
+
+.hex-label {
+  background:transparent; border:none; pointer-events:none;
+  font-family:'SF Mono','Consolas','Menlo',monospace;
+  font-size:9px; font-weight:700; text-align:center;
+  text-shadow:0 1px 4px rgba(0,0,0,1); white-space:nowrap;
+}
+
+.leaflet-popup-content-wrapper {
+  background:rgba(10,14,20,.96) !important; border:1px solid #1e2a3a !important;
+  border-radius:6px !important; box-shadow:0 4px 20px rgba(0,0,0,.7) !important;
+}
+.leaflet-popup-tip { background:rgba(10,14,20,.96) !important; }
+.leaflet-popup-content {
+  margin:10px 14px !important; font-size:11px !important;
+  font-family:'SF Mono','Consolas','Menlo',monospace !important;
+  color:#c4cad4 !important;
+}
+</style>
+</head>
+<body>
+<div id="map"></div>
+
+<div class="panel">
+  <h2>⬡ Weather Sector Grid</h2>
+  <div class="meta-row"><span class="lbl">Source</span>       <span class="val">aoi.geojson</span></div>
+  <div class="meta-row"><span class="lbl">Shape</span>        <span class="val">Pointy-top hex</span></div>
+  <div class="meta-row"><span class="lbl">Radius</span>       <span class="val">55 km</span></div>
+  <div class="meta-row"><span class="lbl">Search radius</span><span class="val">100 km</span></div>
+  <div class="meta-row"><span class="lbl">Poll interval</span><span class="val">30 min</span></div>
+  <div class="meta-row"><span class="lbl">Sectors</span>      <span id="count" class="val">—</span></div>
+  <hr class="sep">
+  <div id="sector-list"></div>
+  <hr class="sep">
+  <button class="btn-toggle" id="btn-r"   onclick="toggleRadius()">◎  Show 100 km query rings</button>
+  <button class="btn-toggle" id="btn-aoi" onclick="toggleAoi()" style="margin-top:4px">◈  Hide AOI polygon</button>
+</div>
+
+<div class="detail-panel">
+  <h3>Selected sector</h3>
+  <div id="info" style="color:#3a4550">Click a sector to inspect</div>
+</div>
+
+<script>
+// ── Map ───────────────────────────────────────────────────────────────────────
+const map = L.map('map', { center:[49.8,-1.0], zoom:7 });
+L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
+  attribution:'&copy; <a href="https://www.openstreetmap.org/">OSM</a> &copy; <a href="https://carto.com/">CARTO</a>',
+  maxZoom:18
+}).addTo(map);
+
+// ── AOI polygon (embedded from aoi.geojson) ───────────────────────────────────
+const AOI_COORDS = [[-5.709316,50.145535],[-5.519276,49.082163],[-4.810943,47.914533],
+  [-3.981677,47.94926],[-1.580258,48.410049],[-0.059935,49.014223],
+  [1.633151,49.956951],[3.84453,51.531001],[0.734779,51.681217],[-5.709316,50.145535]];
+
+const HEX_RADIUS_KM = 55.0;
+
+let aoiLayer = L.polygon(AOI_COORDS.map(c => [c[1],c[0]]), {
+  color:'#7eb8da', weight:2, opacity:0.6,
+  fillColor:'#7eb8da', fillOpacity:0.03, dashArray:'7 5'
+}).addTo(map);
+map.fitBounds(aoiLayer.getBounds(), { padding:[40,40] });
+
+// ── Point-in-polygon (ray casting) ────────────────────────────────────────────
+// Mirrors _point_in_poly() in weather_fetch.py exactly.
+function pointInPoly(lat, lon, coords) {
+  let inside = false;
+  const n = coords.length;
+  for (let i = 0, j = n-1; i < n; j = i++) {
+    const [xi, yi] = coords[i];  // [lon, lat]
+    const [xj, yj] = coords[j];
+    if (((yi > lat) !== (yj > lat)) && (lon < (xj-xi)*(lat-yi)/(yj-yi)+xi))
+      inside = !inside;
+  }
+  return inside;
+}
+
+// ── Hex grid generation ───────────────────────────────────────────────────────
+// Mirrors _build_hex_grid() in weather_fetch.py exactly:
+// pointy-top, offset-row, row_step = r*1.5/111, col_step = r*√3/(111*cos(cLat))
+function buildHexGrid(aoiCoords, rKm) {
+  const lons = aoiCoords.map(c=>c[0]), lats = aoiCoords.map(c=>c[1]);
+  const latMin=Math.min(...lats), latMax=Math.max(...lats);
+  const lonMin=Math.min(...lons), lonMax=Math.max(...lons);
+  const cLat = (latMin+latMax)/2;
+
+  const rowStep = rKm * 1.5 / 111.0;
+  const colStep = rKm * Math.sqrt(3) / (111.0 * Math.cos(cLat * Math.PI/180));
+
+  const grid=[], rows=[];
+  let rowIdx=0;
+  for (let lat=latMin-rowStep; lat<=latMax+rowStep; lat+=rowStep) {
+    const offset = (rowIdx%2) ? colStep/2 : 0;
+    let colIdx=0;
+    for (let lon=lonMin-colStep+offset; lon<=lonMax+colStep; lon+=colStep) {
+      const rlat = Math.round(lat*10000)/10000;
+      const rlon = Math.round(lon*10000)/10000;
+      if (pointInPoly(rlat, rlon, aoiCoords)) {
+        const n = grid.length;
+        grid.push({ lat:rlat, lon:rlon, name:`h${String(n).padStart(2,'0')}`,
+                    rowIdx, colIdx });
+        if (!rows.includes(rlat)) rows.push(rlat);
+      }
+      colIdx++;
+    }
+    rowIdx++;
+  }
+  rows.sort((a,b)=>a-b);
+  return { grid, rows, rowStep, colStep };
+}
+
+const { grid: GRID, rows: ROWS } = buildHexGrid(AOI_COORDS, HEX_RADIUS_KM);
+document.getElementById('count').textContent = GRID.length;
+
+// ── Hex vertex generation ─────────────────────────────────────────────────────
+// Pointy-top: vertex angles 30°,90°,150°,210°,270°,330° (math convention).
+function hexVerts(lat, lon, rKm) {
+  const cosLat = Math.cos(lat*Math.PI/180);
+  return Array.from({length:6}, (_,i) => {
+    const a = Math.PI/180 * (60*i + 30);
+    return [lat + rKm*Math.sin(a)/111.0,
+            lon + rKm*Math.cos(a)/(111.0*cosLat)];
+  });
+}
+
+// ── Row colours (S→N) ─────────────────────────────────────────────────────────
+const ROW_COLORS = ['#3a7ae0','#30aa80','#c07030','#c0406a','#8050c0','#30aab0'];
+function rowColor(rlat) {
+  const i = ROWS.indexOf(rlat);
+  return ROW_COLORS[i % ROW_COLORS.length];
+}
+
+// ── Build map layers ──────────────────────────────────────────────────────────
+let activeHex  = null;
+const qCircles = [];
+let rVis=false, aoiVis=true;
+
+GRID.forEach(s => {
+  const col   = rowColor(s.lat);
+  const verts = hexVerts(s.lat, s.lon, HEX_RADIUS_KM);
+
+  const poly = L.polygon(verts, {
+    color:col, weight:1.8, opacity:0.65,
+    fillColor:col, fillOpacity:0.13
+  }).addTo(map);
+
+  const dot = L.circleMarker([s.lat,s.lon], {
+    radius:4, color:col, weight:2, fillColor:col, fillOpacity:1
+  }).addTo(map);
+
+  const lbl = L.divIcon({
+    className:'hex-label',
+    html:`<span style="color:${col}">${s.name}</span>`,
+    iconSize:[50,12], iconAnchor:[25,-6]
+  });
+  L.marker([s.lat,s.lon], { icon:lbl, interactive:false }).addTo(map);
+
+  const qc = L.circle([s.lat,s.lon], {
+    radius:100000, color:col, weight:1, opacity:0.25,
+    fill:false, dashArray:'4 7'
+  });
+  qCircles.push(qc);
+
+  s.poly = poly; s.dot = dot; s.color = col;
+
+  function activate() {
+    poly.setStyle({ fillOpacity:0.30, opacity:1, weight:2.5 });
+    if (activeHex && activeHex!==poly)
+      activeHex.setStyle({ fillOpacity:0.13, opacity:0.65, weight:1.8 });
+    activeHex = poly;
+    showInfo(s);
+  }
+  poly.on('mouseover', activate);
+  poly.on('click',     activate);
+  dot.on('click',      activate);
+});
+
+// ── Detail panel ──────────────────────────────────────────────────────────────
+function showInfo(s) {
+  const ri = ROWS.indexOf(s.lat);
+  document.getElementById('info').innerHTML = `
+    <div class="si-name">${s.name}</div>
+    <div class="si-row"><span class="si-lbl">Centre</span>  <span class="si-val">${s.lat.toFixed(4)}°N  ${s.lon>=0?'+':''}${s.lon.toFixed(4)}°E</span></div>
+    <div class="si-row"><span class="si-lbl">Lat row</span> <span class="si-val">row ${ri+1} of ${ROWS.length}  (${s.lat}°N)</span></div>
+    <div class="si-row"><span class="si-lbl">Hex radius</span><span class="si-val">${HEX_RADIUS_KM} km</span></div>
+    <div class="si-row"><span class="si-lbl">Query r.</span><span class="si-val">100 km</span></div>
+    <div class="si-row"><span class="si-lbl">Inside AOI</span><span class="si-val" style="color:#30a050">✓ confirmed</span></div>
+  `;
+}
+
+// ── Side panel: grouped by latitude row S→N ───────────────────────────────────
+const listEl = document.getElementById('sector-list');
+ROWS.forEach((rlat, ri) => {
+  const col   = ROW_COLORS[ri % ROW_COLORS.length];
+  const hexes = GRID.filter(s => s.lat===rlat);
+
+  const grp = document.createElement('div');
+  grp.className = 'row-group';
+  grp.innerHTML = `
+    <div class="row-header">
+      <div class="row-swatch" style="background:${col}"></div>
+      <span style="color:${col}">${rlat}°N — ${hexes.length} sector${hexes.length>1?'s':''}</span>
+    </div>`;
+
+  hexes.forEach(s => {
+    const row = document.createElement('div');
+    row.className = 'hex-row';
+    row.innerHTML = `<span>${s.name}</span>
+      <span class="coords">${s.lon>=0?'+':''}${s.lon.toFixed(2)}°E</span>`;
+    row.onclick = () => {
+      map.setView([s.lat,s.lon], 9, { animate:true });
+      s.poly.setStyle({ fillOpacity:0.30, opacity:1, weight:2.5 });
+      if (activeHex && activeHex!==s.poly)
+        activeHex.setStyle({ fillOpacity:0.13, opacity:0.65, weight:1.8 });
+      activeHex = s.poly;
+      showInfo(s);
+    };
+    grp.appendChild(row);
+  });
+  listEl.appendChild(grp);
+});
+
+// ── Toggles ───────────────────────────────────────────────────────────────────
+function toggleRadius() {
+  rVis = !rVis;
+  qCircles.forEach(c => rVis ? c.addTo(map) : map.removeLayer(c));
+  const btn = document.getElementById('btn-r');
+  btn.textContent = rVis ? '◉  Hide 100 km query rings' : '◎  Show 100 km query rings';
+  btn.classList.toggle('active', rVis);
+}
+function toggleAoi() {
+  aoiVis = !aoiVis;
+  aoiVis ? aoiLayer.addTo(map) : map.removeLayer(aoiLayer);
+  const btn = document.getElementById('btn-aoi');
+  btn.textContent = aoiVis ? '◈  Hide AOI polygon' : '◈  Show AOI polygon';
+  btn.classList.toggle('active', !aoiVis);
+}
+</script>
+</body>
+</html>

@@ -82,29 +82,81 @@ BIO_PARAMS = ",".join([
 
 # Tide and extremes endpoints don't take a params list.
 
-# ── Grid — auto-generated from AOI bounds in config.py ────────────────────────
+# ── Grid — pointy-top hexagonal, filtered to the AOI polygon ──────────────────
 #
-# 1° latitude spacing, 1.5° longitude spacing across the AOI bounding box.
-# Updating aoi.geojson and rerunning will automatically adjust the grid.
+# Generates hex centres inside the AOI polygon (from aoi.geojson) using a
+# pointy-top offset-row layout.  Every hex has the same area and all centres
+# are confirmed inside the AOI — no wasted API calls over land or outside the
+# study region.  HEX_RADIUS_KM controls granularity.
 
-def _build_grid(lat_min: float, lat_max: float,
-                lon_min: float, lon_max: float) -> List[Tuple[float, float, str]]:
-    lats, lat = [], float(_math.ceil(lat_min))
-    while lat <= _math.floor(lat_max):
-        lats.append(lat); lat += 1.0
+HEX_RADIUS_KM = 55.0   # centre-to-vertex distance; tune to change sector count
 
-    lons, lon = [], round(_math.ceil(lon_min * 2) / 2, 1)
-    while lon <= lon_max:
-        lons.append(lon); lon = round(lon + 1.5, 2)
 
-    return [
-        (lat, lon, f"lat{lat:.0f}_lon{lon:+.1f}")
-        for lat in lats for lon in lons
-    ]
+def _point_in_poly(lat: float, lon: float,
+                   coords: List[Tuple[float, float]]) -> bool:
+    """Ray-casting point-in-polygon.  coords is a list of [lon, lat] pairs."""
+    inside = False
+    n = len(coords)
+    j = n - 1
+    for i in range(n):
+        xi, yi = coords[i][0], coords[i][1]
+        xj, yj = coords[j][0], coords[j][1]
+        if ((yi > lat) != (yj > lat)) and \
+           (lon < (xj - xi) * (lat - yi) / (yj - yi) + xi):
+            inside = not inside
+        j = i
+    return inside
 
-GRID: List[Tuple[float, float, str]] = _build_grid(
-    _cfg.AOI_LAT_MIN, _cfg.AOI_LAT_MAX,
-    _cfg.AOI_LON_MIN, _cfg.AOI_LON_MAX,
+
+def _build_hex_grid(aoi_coords: List[Tuple[float, float]],
+                    radius_km: float = HEX_RADIUS_KM) -> List[Tuple[float, float, str]]:
+    """
+    Pointy-top hexagonal grid whose centres all fall inside aoi_coords.
+
+    Layout (offset-row):
+      row spacing  = radius_km * 1.5 / 111  degrees lat
+      col spacing  = radius_km * √3 / (111 * cos(centre_lat))  degrees lon
+      odd rows offset east by col_spacing / 2
+    """
+    lons = [c[0] for c in aoi_coords]
+    lats = [c[1] for c in aoi_coords]
+    lat_min, lat_max = min(lats), max(lats)
+    lon_min, lon_max = min(lons), max(lons)
+    ctr_lat = (lat_min + lat_max) / 2
+
+    row_step = radius_km * 1.5 / 111.0
+    col_step = radius_km * _math.sqrt(3) / (111.0 * _math.cos(_math.radians(ctr_lat)))
+
+    grid: List[Tuple[float, float, str]] = []
+    row_idx = 0
+    lat = lat_min - row_step
+    while lat <= lat_max + row_step:
+        offset = (col_step / 2) if (row_idx % 2) else 0.0
+        lon = lon_min - col_step + offset
+        col_idx = 0
+        while lon <= lon_max + col_step:
+            rlat = round(lat, 4)
+            rlon = round(lon, 4)
+            if _point_in_poly(rlat, rlon, aoi_coords):
+                n = len(grid)
+                grid.append((rlat, rlon, f"h{n:02d}"))
+            lon += col_step
+            col_idx += 1
+        lat += row_step
+        row_idx += 1
+
+    return grid
+
+
+GRID: List[Tuple[float, float, str]] = _build_hex_grid(
+    _cfg.AOI_COORDS if _cfg.AOI_COORDS else [
+        [_cfg.AOI_LON_MIN, _cfg.AOI_LAT_MIN],
+        [_cfg.AOI_LON_MAX, _cfg.AOI_LAT_MIN],
+        [_cfg.AOI_LON_MAX, _cfg.AOI_LAT_MAX],
+        [_cfg.AOI_LON_MIN, _cfg.AOI_LAT_MAX],
+        [_cfg.AOI_LON_MIN, _cfg.AOI_LAT_MIN],
+    ],
+    radius_km=HEX_RADIUS_KM,
 )
 
 # ── Timing ─────────────────────────────────────────────────────────────────────

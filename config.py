@@ -50,6 +50,7 @@ if _AOI_GEOJSON.exists():
     if _gj.get("type") == "FeatureCollection": _gj = _gj["features"][0]
     if _gj.get("type") == "Feature":           _gj = _gj["geometry"]
     _coords     = _gj["coordinates"][0]
+    AOI_COORDS  = _coords                    # [[lon, lat], …] outer ring
     AOI_LON_MIN = min(c[0] for c in _coords)
     AOI_LON_MAX = max(c[0] for c in _coords)
     AOI_LAT_MIN = min(c[1] for c in _coords)
@@ -58,7 +59,8 @@ if _AOI_GEOJSON.exists():
           f"({AOI_LAT_MIN:.2f}–{AOI_LAT_MAX:.2f}°N, "
           f"{AOI_LON_MIN:.2f}–{AOI_LON_MAX:.2f}°E)")
 else:
-    AOI_WKT = _default_wkt()
+    AOI_WKT    = _default_wkt()
+    AOI_COORDS = None
 
 # ── Folder layout ─────────────────────────────────────────────────────────────
 SENTINEL_DATA_DIR = Path("sentinel_data")   # downloaded .SAFE folders + zips
