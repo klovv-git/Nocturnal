@@ -108,18 +108,18 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
 <style>
 * { margin:0; padding:0; box-sizing:border-box; }
 body { font-family:'SF Mono','Consolas','Menlo',monospace;
-       background:#0a0e14; color:#c4cad4; }
-#map { width:100%; height:100vh; cursor:crosshair; }
+       background:#0a0e14; color:#c4cad4;
+       display:flex; flex-direction:column; height:100vh; overflow:hidden; }
 
-/* ── floating panel ── */
-.panel {
-  position:absolute; top:12px; right:12px; z-index:1000;
-  background:rgba(10,14,20,.94); border:1px solid #1e2a3a;
-  border-radius:8px; width:272px;
-  backdrop-filter:blur(12px);
-  height:calc(100vh - 24px);
-  display:flex; flex-direction:column;
-  overflow:hidden;
+#top { display:flex; flex:1; min-height:0; }
+#map-container { flex:1; position:relative; min-width:0; }
+#map { width:100%; height:100%; cursor:crosshair; }
+
+/* ── left sidebar ── */
+#info-panel {
+  width:272px; min-width:272px; flex-shrink:0;
+  background:#0a0e14; border-right:1px solid #1e2a3a;
+  display:flex; flex-direction:column; overflow:hidden;
 }
 .panel-head {
   padding:12px 14px 10px; flex-shrink:0;
@@ -132,18 +132,17 @@ body { font-family:'SF Mono','Consolas','Menlo',monospace;
 #point-name {
   font-size:12px; font-weight:700; color:#c4cad4; margin-bottom:2px;
 }
-#point-sub {
-  font-size:9px; color:#6b7785; line-height:1.7;
-}
+#point-sub  { font-size:9px; color:#6b7785; line-height:1.7; }
 #click-hint { font-size:10px; color:#3a4a5a; line-height:1.7; }
 
 /* ── tab bar ── */
 #tab-bar {
-  display:flex; gap:4px; padding:8px 14px 0; flex-shrink:0;
+  display:flex; gap:4px; padding:8px 14px 8px; flex-shrink:0;
+  border-bottom:1px solid #1e2a3a;
 }
 .tab-btn {
   flex:1; padding:4px 0;
-  background:#121820; border:1px solid #1e2a3a; border-radius:4px;
+  background:#0d1118; border:1px solid #1e2a3a; border-radius:4px;
   color:#6b7785; font-family:inherit; font-size:9px;
   cursor:pointer; letter-spacing:.3px; text-transform:uppercase;
   transition:all .15s;
@@ -153,7 +152,7 @@ body { font-family:'SF Mono','Consolas','Menlo',monospace;
 
 /* ── entry list ── */
 #entry-list {
-  flex:1; overflow-y:auto; min-height:0; padding:6px 0;
+  flex:1; overflow-y:auto; min-height:0; padding:4px 0;
 }
 #entry-list::-webkit-scrollbar { width:3px; }
 #entry-list::-webkit-scrollbar-track { background:transparent; }
@@ -174,7 +173,6 @@ body { font-family:'SF Mono','Consolas','Menlo',monospace;
 .entry-row.current {
   background:rgba(126,184,218,.10); border-left-color:#7eb8da;
 }
-
 .e-time {
   font-size:10px; font-weight:700; color:#5a6f85; margin-bottom:4px;
 }
@@ -208,20 +206,16 @@ body { font-family:'SF Mono','Consolas','Menlo',monospace;
 .spark-lbl { display:flex; justify-content:space-between;
              font-size:8px; color:#3a4a5a; margin-top:3px; }
 
-/* ── slider section ── */
-.slider-section {
-  flex-shrink:0; padding:8px 14px 10px;
-  border-top:1px solid #1e2a3a; background:rgba(10,14,20,.6);
+/* ── bottom timeline bar ── */
+#timeline-bar {
+  flex-shrink:0; background:#0a0e14; border-top:1px solid #1e2a3a;
+  padding:8px 16px 10px; display:flex; align-items:center; gap:14px;
+  user-select:none;
 }
-#time-label {
-  font-size:10px; color:#7eb8da; margin-bottom:5px;
-  letter-spacing:.3px;
-}
-.slider-wrap { position:relative; }
-#timeline-slider {
-  width:100%; cursor:pointer; accent-color:#7eb8da;
-  height:3px;
-}
+#time-label { font-size:10px; color:#7eb8da; letter-spacing:.3px;
+              white-space:nowrap; min-width:192px; }
+.slider-wrap { position:relative; flex:1; }
+#timeline-slider { width:100%; cursor:pointer; accent-color:#7eb8da; }
 #now-mark {
   position:absolute; top:-10px;
   font-size:8px; color:#7eb8da; transform:translateX(-50%);
@@ -248,31 +242,40 @@ body { font-family:'SF Mono','Consolas','Menlo',monospace;
 </style>
 </head>
 <body>
-<div id="map"></div>
+<div id="top">
 
-<div class="panel">
-  <div class="panel-head">
-    <h2>⛅ NOCTURNAL WEATHER</h2>
-    <div id="point-name">—</div>
-    <div id="point-sub">
-      <span id="click-hint">Click anywhere on the map to load forecast data.</span>
+  <!-- ── Left sidebar ── -->
+  <div id="info-panel">
+    <div class="panel-head">
+      <h2>⛅ NOCTURNAL WEATHER</h2>
+      <div id="point-name">—</div>
+      <div id="point-sub">
+        <span id="click-hint">Click anywhere on the map<br>to load forecast data.</span>
+      </div>
     </div>
+
+    <div id="tab-bar" style="display:none">
+      <button class="tab-btn active" data-tab="wx">Weather</button>
+      <button class="tab-btn"        data-tab="bio">Biology</button>
+      <button class="tab-btn"        data-tab="tide">Tides</button>
+    </div>
+
+    <div id="entry-list"></div>
   </div>
 
-  <div id="tab-bar" style="display:none">
-    <button class="tab-btn active" data-tab="wx">Weather</button>
-    <button class="tab-btn"        data-tab="bio">Biology</button>
-    <button class="tab-btn"        data-tab="tide">Tides</button>
+  <!-- ── Map ── -->
+  <div id="map-container">
+    <div id="map"></div>
   </div>
 
-  <div id="entry-list"></div>
+</div>
 
-  <div class="slider-section">
-    <div id="time-label">——</div>
-    <div class="slider-wrap">
-      <div id="now-mark" style="display:none">▼</div>
-      <input type="range" id="timeline-slider" min="0" max="1000" value="0">
-    </div>
+<!-- ── Timeline bar ── -->
+<div id="timeline-bar">
+  <div id="time-label">——</div>
+  <div class="slider-wrap">
+    <div id="now-mark" style="display:none">▼</div>
+    <input type="range" id="timeline-slider" min="0" max="1000" value="0">
   </div>
 </div>
 
@@ -613,12 +616,13 @@ map.on('click', e=>{
   const pt=nearestPoint(e.latlng.lat, e.latlng.lng);
   if(!pt) return;
 
+  // marker + popup stay at the exact clicked position
   if(clickMarker){
-    clickMarker.setLatLng([pt.lat, pt.lon]);
+    clickMarker.setLatLng(e.latlng);
   } else {
-    clickMarker=L.circleMarker([pt.lat,pt.lon],{
-      radius:9, color:'#7eb8da', fillColor:'#7eb8da',
-      fillOpacity:0.15, weight:2, interactive:true
+    clickMarker=L.circleMarker(e.latlng,{
+      radius:7, color:'#7eb8da', fillColor:'#7eb8da',
+      fillOpacity:0.25, weight:2, interactive:true
     }).addTo(map);
     clickMarker.bindPopup('',{maxWidth:240});
   }
@@ -636,8 +640,7 @@ function onSlider(){
   timeLabel.textContent=fmtTs(ts);
   if(selectedPoint){
     highlightRow();
-    if(clickMarker && clickMarker.isPopupOpen())
-      clickMarker.setPopupContent(buildPopup(selectedPoint,ts));
+    if(clickMarker) clickMarker.setPopupContent(buildPopup(selectedPoint,ts));
     if(activeTab==='tide') renderTab(selectedPoint,'tide'); // redraw sparkline cursor
   }
 }
