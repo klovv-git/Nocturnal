@@ -658,10 +658,17 @@ class WeatherStore:
     # ──────────────────────────── stats ───────────────────────────────────────
 
     def stats(self) -> Dict[str, Any]:
+        day_start = datetime.now(timezone.utc).replace(
+            hour=0, minute=0, second=0, microsecond=0
+        ).isoformat(timespec="seconds")
         with self._lock:
             def _count(tbl):
                 return self._conn.execute(
                     f"SELECT COUNT(*) FROM {tbl}").fetchone()[0]
+
+            requests_today = self._conn.execute(
+                "SELECT COUNT(*) FROM fetch_log WHERE fetched_at >= ?",
+                (day_start,)).fetchone()[0]
 
             return {
                 "weather_obs":     _count("weather_obs"),
@@ -669,7 +676,7 @@ class WeatherStore:
                 "tide_obs":        _count("tide_obs"),
                 "tide_extremes":   _count("tide_extremes"),
                 "fetch_log_slots": _count("fetch_log"),
-                "requests_today":  self.requests_today(),
+                "requests_today":  requests_today,
             }
 
 
