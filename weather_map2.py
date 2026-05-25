@@ -569,10 +569,10 @@ function showPoint(point, clickLat, clickLon) {
   const km=distKm(clickLat,clickLon,point.lat,point.lon).toFixed(1);
   document.getElementById('point-name').textContent=
     `${point.n}  ·  ${point.lat.toFixed(2)}°N  ${point.lon>=0?'+':''}${point.lon.toFixed(2)}°E`;
+  // Replace point-sub content (this also removes #click-hint from the DOM, so don't access it after)
   document.getElementById('point-sub').innerHTML=
     `<span style="color:#4a5a6a">Clicked  ${clickLat.toFixed(3)}°N  ${clickLon>=0?'+':''}${clickLon.toFixed(3)}°E</span><br>`+
     `<span style="color:#4a5a6a">Nearest data  ${km} km</span>`;
-  document.getElementById('click-hint').style.display='none';
   document.getElementById('tab-bar').style.display='flex';
 
   renderTab(point, activeTab);
