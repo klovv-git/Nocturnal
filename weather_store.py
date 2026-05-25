@@ -231,8 +231,8 @@ class WeatherStore:
         parameter name whose value is a multi-source dict, e.g.
             {"time": "...", "waveHeight": {"sg": 1.23, "noaa": 1.45}, ...}
 
-        Uses INSERT OR IGNORE — safe to call repeatedly; duplicates are skipped.
-        Returns the count of new rows written.
+        Upserts rows — new rows are inserted, existing rows are updated with
+        the latest forecast values.  Returns the count of rows upserted.
         """
         pick    = self._pick
         written = 0
@@ -245,7 +245,7 @@ class WeatherStore:
                 ts_utc = h["time"].replace("Z", "+00:00")
 
                 cur = self._conn.execute(
-                    """INSERT OR IGNORE INTO weather_obs
+                    """INSERT INTO weather_obs
                        (lat, lon, ts_utc, ts_epoch,
                         wave_height, wave_dir, wave_period,
                         swell_height, swell_dir, swell_period,
@@ -253,7 +253,28 @@ class WeatherStore:
                         visibility, cloud_cover, air_temp, pressure,
                         current_speed, current_dir, precip,
                         humidity, sea_level, src)
-                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                       ON CONFLICT(lat, lon, ts_epoch) DO UPDATE SET
+                           ts_utc        = excluded.ts_utc,
+                           wave_height   = excluded.wave_height,
+                           wave_dir      = excluded.wave_dir,
+                           wave_period   = excluded.wave_period,
+                           swell_height  = excluded.swell_height,
+                           swell_dir     = excluded.swell_dir,
+                           swell_period  = excluded.swell_period,
+                           wind_speed    = excluded.wind_speed,
+                           wind_dir      = excluded.wind_dir,
+                           wind_gust     = excluded.wind_gust,
+                           visibility    = excluded.visibility,
+                           cloud_cover   = excluded.cloud_cover,
+                           air_temp      = excluded.air_temp,
+                           pressure      = excluded.pressure,
+                           current_speed = excluded.current_speed,
+                           current_dir   = excluded.current_dir,
+                           precip        = excluded.precip,
+                           humidity      = excluded.humidity,
+                           sea_level     = excluded.sea_level,
+                           src           = excluded.src""",
                     (lat, lon, ts_utc, epoch,
                      pick(h.get("waveHeight")),
                      pick(h.get("waveDirection")),
@@ -275,11 +296,10 @@ class WeatherStore:
                      pick(h.get("seaLevel")),
                      "stormglass"))
 
-                if cur.rowcount:
-                    self._conn.execute(
-                        "INSERT INTO weather_rtree VALUES (?,?,?,?,?)",
-                        (cur.lastrowid, lat, lat, lon, lon))
-                    written += 1
+                self._conn.execute(
+                    "INSERT OR IGNORE INTO weather_rtree VALUES (?,?,?,?,?)",
+                    (cur.lastrowid, lat, lat, lon, lon))
+                written += 1
 
             self._conn.commit()
 
@@ -294,7 +314,8 @@ class WeatherStore:
         """
         Persist hourly observations from a Storm Glass bio/point response.
 
-        Returns the count of new rows written.
+        Upserts rows — new rows are inserted, existing rows are updated with
+        the latest forecast values.  Returns the count of rows upserted.
         """
         pick    = self._pick
         written = 0
@@ -307,11 +328,23 @@ class WeatherStore:
                 ts_utc = h["time"].replace("Z", "+00:00")
 
                 cur = self._conn.execute(
-                    """INSERT OR IGNORE INTO bio_obs
+                    """INSERT INTO bio_obs
                        (lat, lon, ts_utc, ts_epoch,
                         chlorophyll, phytoplankton, salinity, water_temp,
                         ice_cover, oxygen, nitrate, phosphate, silicate, src)
-                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                       ON CONFLICT(lat, lon, ts_epoch) DO UPDATE SET
+                           ts_utc       = excluded.ts_utc,
+                           chlorophyll  = excluded.chlorophyll,
+                           phytoplankton= excluded.phytoplankton,
+                           salinity     = excluded.salinity,
+                           water_temp   = excluded.water_temp,
+                           ice_cover    = excluded.ice_cover,
+                           oxygen       = excluded.oxygen,
+                           nitrate      = excluded.nitrate,
+                           phosphate    = excluded.phosphate,
+                           silicate     = excluded.silicate,
+                           src          = excluded.src""",
                     (lat, lon, ts_utc, epoch,
                      pick(h.get("chlorophyll")),
                      pick(h.get("phytoplankton")),
@@ -324,11 +357,10 @@ class WeatherStore:
                      pick(h.get("silicate")),
                      "stormglass"))
 
-                if cur.rowcount:
-                    self._conn.execute(
-                        "INSERT INTO bio_rtree VALUES (?,?,?,?,?)",
-                        (cur.lastrowid, lat, lat, lon, lon))
-                    written += 1
+                self._conn.execute(
+                    "INSERT OR IGNORE INTO bio_rtree VALUES (?,?,?,?,?)",
+                    (cur.lastrowid, lat, lat, lon, lon))
+                written += 1
 
             self._conn.commit()
 
@@ -347,7 +379,8 @@ class WeatherStore:
         The API returns a `data` list (not `hours`); each element is:
             {"time": "...", "sg": 1.23}
 
-        Returns the count of new rows written.
+        Upserts rows — new rows are inserted, existing rows are updated with
+        the latest forecast values.  Returns the count of rows upserted.
         """
         pick    = self._pick
         written = 0
@@ -364,16 +397,19 @@ class WeatherStore:
                 height = pick(item)
 
                 cur = self._conn.execute(
-                    """INSERT OR IGNORE INTO tide_obs
+                    """INSERT INTO tide_obs
                        (lat, lon, ts_utc, ts_epoch, height, src)
-                       VALUES (?,?,?,?,?,?)""",
+                       VALUES (?,?,?,?,?,?)
+                       ON CONFLICT(lat, lon, ts_epoch) DO UPDATE SET
+                           ts_utc = excluded.ts_utc,
+                           height = excluded.height,
+                           src    = excluded.src""",
                     (lat, lon, ts_utc, epoch, height, "stormglass"))
 
-                if cur.rowcount:
-                    self._conn.execute(
-                        "INSERT INTO tide_rtree VALUES (?,?,?,?,?)",
-                        (cur.lastrowid, lat, lat, lon, lon))
-                    written += 1
+                self._conn.execute(
+                    "INSERT OR IGNORE INTO tide_rtree VALUES (?,?,?,?,?)",
+                    (cur.lastrowid, lat, lat, lon, lon))
+                written += 1
 
             self._conn.commit()
 
@@ -404,16 +440,19 @@ class WeatherStore:
                 extreme_type = (item.get("type") or "").lower()
                 height  = item.get("height")
 
-                cur = self._conn.execute(
-                    """INSERT OR IGNORE INTO tide_extremes
+                self._conn.execute(
+                    """INSERT INTO tide_extremes
                        (lat, lon, ts_utc, ts_epoch, height, type, src)
-                       VALUES (?,?,?,?,?,?,?)""",
+                       VALUES (?,?,?,?,?,?,?)
+                       ON CONFLICT(lat, lon, ts_epoch, type) DO UPDATE SET
+                           ts_utc = excluded.ts_utc,
+                           height = excluded.height,
+                           src    = excluded.src""",
                     (lat, lon, ts_utc, epoch,
                      float(height) if height is not None else None,
                      extreme_type, "stormglass"))
 
-                if cur.rowcount:
-                    written += 1
+                written += 1
 
             self._conn.commit()
 

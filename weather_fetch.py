@@ -285,7 +285,7 @@ def _fetch_and_store_weather(api_key: str,
     hours = data.get("hours", [])
     n     = store.record_weather(lat, lon, hours)
     store.mark_fetched(lat, lon, "weather", slot)
-    print(f"    weather  {n:4d} new rows  ({_quota_line(data.get('meta', {}))})")
+    print(f"    weather  {n:4d} rows  ({_quota_line(data.get('meta', {}))})")
     return True
 
 
@@ -302,7 +302,7 @@ def _fetch_and_store_bio(api_key: str,
     hours = data.get("hours", [])
     n     = store.record_bio(lat, lon, hours)
     store.mark_fetched(lat, lon, "bio", slot)
-    print(f"    bio      {n:4d} new rows  ({_quota_line(data.get('meta', {}))})")
+    print(f"    bio      {n:4d} rows  ({_quota_line(data.get('meta', {}))})")
     return True
 
 
@@ -320,7 +320,7 @@ def _fetch_and_store_tide(api_key: str,
     rows = data.get("data", [])
     n    = store.record_tide(lat, lon, rows)
     store.mark_fetched(lat, lon, "tide", slot)
-    print(f"    tide     {n:4d} new rows  ({_quota_line(data.get('meta', {}))})")
+    print(f"    tide     {n:4d} rows  ({_quota_line(data.get('meta', {}))})")
     return True
 
 
@@ -338,7 +338,7 @@ def _fetch_and_store_extremes(api_key: str,
     rows = data.get("data", [])
     n    = store.record_tide_extremes(lat, lon, rows)
     store.mark_fetched(lat, lon, "extremes", slot)
-    print(f"    extremes {n:4d} new events ({_quota_line(data.get('meta', {}))})")
+    print(f"    extremes {n:4d} events ({_quota_line(data.get('meta', {}))})")
     return True
 
 
@@ -445,8 +445,11 @@ def run_daemon(api_key: str, store: WeatherStore,
                endpoints: Optional[List[str]] = None) -> None:
     """Refresh every `interval` seconds (default: 30 min)."""
     print(f"[daemon] Starting — refresh every {interval}s  (Ctrl-C to stop)")
+    cycle = 0
     while True:
-        run_now(api_key, store, hours_ahead=hours_ahead, endpoints=endpoints)
+        cycle += 1
+        print(f"[{_ts()}] [daemon] Cycle {cycle}")
+        run_now(api_key, store, hours_ahead=hours_ahead, endpoints=endpoints, force=True)
         next_at = datetime.now(timezone.utc) + timedelta(seconds=interval)
         print(f"[daemon] Next cycle at "
               f"{next_at.strftime('%Y-%m-%d %H:%M')} UTC\n")
@@ -513,8 +516,7 @@ def main() -> None:
         print("  NOCTURNAL Weather Fetch — Storm Glass")
         print("─" * 60)
         print(f"  DB       : {args.db}")
-        print(f"  Grid     : {len(GRID)} points  "
-              f"({len(_LAT_ROWS)} rows × {len(_LON_COLS)} columns)")
+        print(f"  Grid     : {len(GRID)} points (auto-generated from AOI)")
         print(f"  Interval : {args.interval}s  ({args.interval//60} min)")
         eps = args.endpoints or list(_ENDPOINT_FUNCS.keys())
         print(f"  Endpoints: {', '.join(eps)}")
