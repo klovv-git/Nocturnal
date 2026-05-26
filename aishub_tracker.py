@@ -34,9 +34,12 @@ DATA_DIR       = "ais_data"  # directory for recorded files
 # Shared across ALL scripts using this API key — lives in ~ so both trackers see it
 LAST_POLL_FILE = os.path.expanduser("~/.aishub_last_poll")
 
-# English Channel bounding box
-LAT_MIN, LAT_MAX =  48.3, 51.5
-LON_MIN, LON_MAX =  -6.0,  2.5
+# Bounding box aligned to aoi.geojson extent
+# AOI polygon spans 47.91–51.68°N, -5.71–3.84°E
+# Previous LON_MAX of 2.5 was leaving the northeast wedge (Strait of Dover east /
+# Belgian coast / Thames Estuary east) uncollected — expanded to 4.0 to cover it.
+LAT_MIN, LAT_MAX =  47.9, 51.7
+LON_MIN, LON_MAX =  -5.8,  4.0
 
 # ── AIS memory (Phase 1) ───────────────────────────────────────────────────────
 DB_PATH = os.environ.get(
