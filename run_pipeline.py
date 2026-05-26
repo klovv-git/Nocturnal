@@ -96,8 +96,19 @@ def process_scene(safe_path: Path, weights: Path) -> bool:
          "--safe",  str(safe_path)],
         "Phase 3 — geocode + AIS matching"
     )
+    if not ok:
+        return False
 
-    return ok
+    # Phase 4 — extract SAR chip images for dark vessel popup previews
+    run(
+        [sys.executable, "extract_chips.py",
+         "--scene", scene_name,
+         "--safe",  str(safe_path)],
+        "Phase 4 — extract dark vessel chips"
+    )
+    # Non-fatal: if chips fail (e.g. no dark detections) the pipeline still succeeded
+
+    return True
 
 
 def main():
