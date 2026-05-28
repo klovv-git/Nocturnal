@@ -8,14 +8,18 @@ ais_map.py — Interactive AIS vessel movement map for NOCTURNAL.
 Reads all AIS tracks from ais_memory.db and generates a self-contained
 HTML map with an animated timeline showing vessel movement.
 
+By default the script rebuilds every 12 hours and the browser auto-refreshes
+to match, so the map always reflects the latest data in the database.
+
 Build time scales with DB size (~38 GB = 2–5 min).  Use --days N to
 load only the last N days for a faster build.
 
 Usage:
-    python ais_map.py                 # full DB range
-    python ais_map.py --days 7        # last 7 days
+    python ais_map.py                 # rebuild every 12 h (default)
+    python ais_map.py --days 7        # last 7 days, rebuild every 12 h
+    python ais_map.py --watch 6       # rebuild every 6 h
+    python ais_map.py --once          # single build, no auto-refresh
     python ais_map.py --thin 15       # 1 ping per vessel per 15 min
-    python ais_map.py --out my.html
 """
 
 import argparse
@@ -178,6 +182,7 @@ HTML = r"""<!DOCTYPE html>
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
+__AUTO_REFRESH__
 <title>NOCTURNAL — AIS</title>
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css"/>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
@@ -622,41 +627,71 @@ document.getElementById('play-btn').addEventListener('click', function(){
 </html>"""
 
 
-# ── Main ───────────────────────────────────────────────────────────────────────
+# ── Build + Main ───────────────────────────────────────────────────────────────
+
+DEFAULT_WATCH_HOURS = 12
+
+
+def build(db_path: Path, thin_min: int, days: int | None,
+          out_path: Path, refresh_secs: int = 0):
+    """Build one HTML snapshot. refresh_secs > 0 embeds a meta auto-refresh tag."""
+    t_lo = t_hi = None
+    if days:
+        t_hi = int(datetime.now(timezone.utc).timestamp())
+        t_lo = t_hi - days * 86400
+
+    data     = load_tracks(db_path, thin_min=thin_min, t_lo=t_lo, t_hi=t_hi)
+    aoi_json = AOI_FILE.read_text(encoding="utf-8") if AOI_FILE.exists() else "null"
+
+    auto_refresh = (f'<meta http-equiv="refresh" content="{refresh_secs}">'
+                    if refresh_secs > 0 else "")
+
+    html = HTML \
+        .replace("__DATA_JSON__",    json.dumps(data, separators=(',', ':'))) \
+        .replace("__AOI_GEOJSON__",  aoi_json) \
+        .replace("__AUTO_REFRESH__", auto_refresh)
+
+    out_path.write_text(html, encoding="utf-8")
+    size_kb = out_path.stat().st_size >> 10
+    print(f"\nSaved → {out_path.resolve()}  ({size_kb} KB)")
+
 
 def main():
     ap = argparse.ArgumentParser(
         description="Generate AIS vessel movement map for NOCTURNAL"
     )
-    ap.add_argument("--db",   type=Path, default=DEFAULT_DB)
-    ap.add_argument("--out",  type=Path, default=DEFAULT_OUT)
-    ap.add_argument("--thin", type=int,  default=DEFAULT_THIN,
+    ap.add_argument("--db",    type=Path, default=DEFAULT_DB)
+    ap.add_argument("--out",   type=Path, default=DEFAULT_OUT)
+    ap.add_argument("--thin",  type=int,  default=DEFAULT_THIN,
                     help=f"Thin to 1 ping per vessel per N minutes (default: {DEFAULT_THIN})")
-    ap.add_argument("--days", type=int,  default=None,
+    ap.add_argument("--days",  type=int,  default=None,
                     help="Load only the last N days (faster; omit for full DB range)")
+    ap.add_argument("--watch", type=int,  default=DEFAULT_WATCH_HOURS, metavar="HRS",
+                    help=f"Rebuild every HRS hours (default: {DEFAULT_WATCH_HOURS})")
+    ap.add_argument("--once",  action="store_true",
+                    help="Single build only — no watch loop, no browser auto-refresh")
     args = ap.parse_args()
 
     print("NOCTURNAL — AIS Map")
     print("─" * 40)
     print(f"  DB   : {args.db}  ({args.db.stat().st_size >> 30} GB)")
 
-    t_lo = t_hi = None
-    if args.days:
-        t_hi = int(datetime.now(timezone.utc).timestamp())
-        t_lo = t_hi - args.days * 86400
-
-    data = load_tracks(args.db, thin_min=args.thin, t_lo=t_lo, t_hi=t_hi)
-
-    aoi_json = AOI_FILE.read_text(encoding="utf-8") if AOI_FILE.exists() else "null"
-
-    html = HTML \
-        .replace("__DATA_JSON__",   json.dumps(data, separators=(',', ':'))) \
-        .replace("__AOI_GEOJSON__", aoi_json)
-
-    args.out.write_text(html, encoding="utf-8")
-    size_kb = args.out.stat().st_size >> 10
-    print(f"\nSaved → {args.out.resolve()}  ({size_kb} KB)")
-    print("Open ais_map.html in your browser.")
+    if args.once:
+        build(args.db, args.thin, args.days, args.out, refresh_secs=0)
+        print("Open ais_map.html in your browser.")
+    else:
+        refresh_secs = args.watch * 3600
+        print(f"  Watch: rebuilding every {args.watch}h, browser auto-refreshes every {args.watch}h")
+        print(f"  Open {args.out} in your browser — it will stay up to date automatically.")
+        print("  Press Ctrl+C to stop.\n")
+        while True:
+            try:
+                build(args.db, args.thin, args.days, args.out, refresh_secs=refresh_secs)
+                print(f"  Next rebuild in {args.watch}h…\n")
+                _time.sleep(refresh_secs)
+            except KeyboardInterrupt:
+                print("\n[stopped]")
+                break
 
 
 if __name__ == "__main__":
