@@ -6,14 +6,16 @@ sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding="utf-8", errors="repla
 ais_live_map.py — Latest-position AIS snapshot map for NOCTURNAL.
 
 Shows every vessel at its most recent known position with a short trail.
-Queries only the last N hours via the ts_epoch index — builds in seconds,
-not minutes.
+Queries only the last N hours via the ts_epoch index — builds in seconds.
+
+By default the script rebuilds the HTML every 5 minutes and the page
+auto-refreshes in the browser to match, so you always see live data.
 
 Usage:
-    python ais_live_map.py                  # last 6 hours (default)
-    python ais_live_map.py --hours 12       # last 12 hours
-    python ais_live_map.py --out live.html
-    python ais_live_map.py --watch 5        # rebuild every 5 min
+    python ais_live_map.py                  # rebuild every 5 min (default)
+    python ais_live_map.py --watch 2        # rebuild every 2 min
+    python ais_live_map.py --once           # single build, no auto-refresh
+    python ais_live_map.py --hours 12       # wider lookback window
 """
 
 import argparse
@@ -185,6 +187,7 @@ HTML = r"""<!DOCTYPE html>
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
+__AUTO_REFRESH__
 <title>NOCTURNAL — Live AIS</title>
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css"/>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
@@ -655,13 +658,23 @@ function searchSelect(mmsi){
 
 # ── Main ───────────────────────────────────────────────────────────────────────
 
-def build(db_path: Path, hours: int, out_path: Path):
+DEFAULT_WATCH = 5   # minutes
+
+
+def build(db_path: Path, hours: int, out_path: Path, refresh_secs: int = 0):
+    """Build the HTML snapshot. refresh_secs > 0 embeds a meta auto-refresh tag."""
     data     = load_snapshot(db_path, hours)
     aoi_json = AOI_FILE.read_text(encoding="utf-8") if AOI_FILE.exists() else "null"
 
+    if refresh_secs > 0:
+        auto_refresh = f'<meta http-equiv="refresh" content="{refresh_secs}">'
+    else:
+        auto_refresh = ""
+
     html = HTML \
-        .replace("__DATA_JSON__",   json.dumps(data, separators=(',', ':'))) \
-        .replace("__AOI_GEOJSON__", aoi_json)
+        .replace("__DATA_JSON__",    json.dumps(data, separators=(',', ':'))) \
+        .replace("__AOI_GEOJSON__",  aoi_json) \
+        .replace("__AUTO_REFRESH__", auto_refresh)
 
     out_path.write_text(html, encoding="utf-8")
     size_kb = out_path.stat().st_size >> 10
@@ -676,28 +689,32 @@ def main():
     ap.add_argument("--out",   type=Path, default=DEFAULT_OUT)
     ap.add_argument("--hours", type=int,  default=DEFAULT_HOURS,
                     help=f"Lookback window in hours (default: {DEFAULT_HOURS})")
-    ap.add_argument("--watch", type=int,  default=None, metavar="MIN",
-                    help="Rebuild every MIN minutes (keeps running; open HTML in browser)")
+    ap.add_argument("--watch", type=int,  default=DEFAULT_WATCH, metavar="MIN",
+                    help=f"Rebuild every MIN minutes (default: {DEFAULT_WATCH})")
+    ap.add_argument("--once",  action="store_true",
+                    help="Single build only — no watch loop, no browser auto-refresh")
     args = ap.parse_args()
 
     print("NOCTURNAL — Live AIS Map")
     print("─" * 40)
     print(f"  DB   : {args.db}  ({args.db.stat().st_size >> 30} GB)")
 
-    if args.watch:
-        print(f"  Watch: rebuilding every {args.watch} min — open {args.out} in browser")
+    if args.once:
+        build(args.db, args.hours, args.out, refresh_secs=0)
+        print("Open ais_live_map.html in your browser.")
+    else:
+        refresh_secs = args.watch * 60
+        print(f"  Watch: rebuilding every {args.watch} min, browser auto-refreshes every {args.watch} min")
+        print(f"  Open {args.out} in your browser — it will stay up to date automatically.")
         print("  Press Ctrl+C to stop.\n")
         while True:
             try:
-                build(args.db, args.hours, args.out)
+                build(args.db, args.hours, args.out, refresh_secs=refresh_secs)
                 print(f"  Next rebuild in {args.watch} min…\n")
-                _time.sleep(args.watch * 60)
+                _time.sleep(refresh_secs)
             except KeyboardInterrupt:
                 print("\n[stopped]")
                 break
-    else:
-        build(args.db, args.hours, args.out)
-        print("Open ais_live_map.html in your browser.")
 
 
 if __name__ == "__main__":
