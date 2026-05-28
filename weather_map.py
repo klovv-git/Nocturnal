@@ -9,13 +9,19 @@ Click anywhere inside the AOI to see the full hourly forecast for the
 nearest Storm Glass grid point.  The time slider scrubs the 48-hour
 window stored in weather.db.
 
+By default the script rebuilds every 20 minutes and the browser
+auto-refreshes to match, so you always see the latest forecast data.
+
 Usage:
-    python weather_map.py [--db weather.db] [--out weather_map.html]
+    python weather_map.py                # rebuild every 20 min (default)
+    python weather_map.py --watch 10     # rebuild every 10 min
+    python weather_map.py --once         # single build, no auto-refresh
 """
 
 import argparse
 import json
 import sqlite3
+import time as _time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -132,6 +138,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   <meta charset="utf-8"/>
   <title>NOCTURNAL — Weather Map</title>
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  __AUTO_REFRESH__
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
   <style>
@@ -848,34 +855,63 @@ document.querySelectorAll('.tab-btn').forEach(function(btn) {
 </html>"""
 
 
-# ── main ───────────────────────────────────────────────────────────────────────
+# ── Build + Main ───────────────────────────────────────────────────────────────
+
+DEFAULT_WATCH_MIN = 20
+
+
+def build(db_path: Path, out_path: Path, refresh_secs: int = 0):
+    """Build one HTML snapshot. refresh_secs > 0 embeds a meta auto-refresh tag."""
+    data     = load_data(db_path)
+    aoi_json = AOI_FILE.read_text(encoding="utf-8") if AOI_FILE.exists() else "null"
+
+    auto_refresh = (f'<meta http-equiv="refresh" content="{refresh_secs}">'
+                    if refresh_secs > 0 else "")
+
+    html = HTML_TEMPLATE \
+        .replace("__DATA_JSON__",    json.dumps(data)) \
+        .replace("__AOI_GEOJSON__",  aoi_json) \
+        .replace("__AUTO_REFRESH__", auto_refresh)
+
+    out_path.write_text(html, encoding="utf-8")
+    size_kb = out_path.stat().st_size >> 10
+    print(f"\nSaved → {out_path.resolve()}  ({size_kb} KB)")
+
 
 def main():
     ap = argparse.ArgumentParser(
         description="Generate a self-contained weather forecast map for NOCTURNAL"
     )
-    ap.add_argument("--db",  type=Path, default=DEFAULT_DB,
+    ap.add_argument("--db",    type=Path, default=DEFAULT_DB,
                     help=f"Path to weather.db (default: {DEFAULT_DB})")
-    ap.add_argument("--out", type=Path, default=DEFAULT_OUT,
+    ap.add_argument("--out",   type=Path, default=DEFAULT_OUT,
                     help=f"Output HTML file (default: {DEFAULT_OUT})")
+    ap.add_argument("--watch", type=int,  default=DEFAULT_WATCH_MIN, metavar="MIN",
+                    help=f"Rebuild every MIN minutes (default: {DEFAULT_WATCH_MIN})")
+    ap.add_argument("--once",  action="store_true",
+                    help="Single build only — no watch loop, no browser auto-refresh")
     args = ap.parse_args()
 
     print("NOCTURNAL Weather Map")
     print("─" * 40)
     print(f"  DB  : {args.db}")
 
-    data = load_data(args.db)
-
-    aoi_json = AOI_FILE.read_text(encoding="utf-8") if AOI_FILE.exists() else "null"
-
-    html = HTML_TEMPLATE \
-        .replace("__DATA_JSON__",   json.dumps(data)) \
-        .replace("__AOI_GEOJSON__", aoi_json)
-
-    args.out.write_text(html, encoding="utf-8")
-    size_kb = args.out.stat().st_size >> 10
-    print(f"\nSaved → {args.out.resolve()}  ({size_kb} KB)")
-    print("Open weather_map.html in your browser.")
+    if args.once:
+        build(args.db, args.out, refresh_secs=0)
+        print("Open weather_map.html in your browser.")
+    else:
+        refresh_secs = args.watch * 60
+        print(f"  Watch: rebuilding every {args.watch} min, browser auto-refreshes every {args.watch} min")
+        print(f"  Open {args.out} in your browser — it will stay up to date automatically.")
+        print("  Press Ctrl+C to stop.\n")
+        while True:
+            try:
+                build(args.db, args.out, refresh_secs=refresh_secs)
+                print(f"  Next rebuild in {args.watch} min…\n")
+                _time.sleep(refresh_secs)
+            except KeyboardInterrupt:
+                print("\n[stopped]")
+                break
 
 
 if __name__ == "__main__":
