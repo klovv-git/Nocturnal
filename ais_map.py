@@ -34,7 +34,7 @@ import config as _cfg
 DEFAULT_DB      = Path(str(_cfg.DB_PATH))
 AOI_FILE        = Path(__file__).parent / "aoi.geojson"
 DEFAULT_OUT     = Path("ais_map.html")
-DEFAULT_THIN    = 10   # minutes
+DEFAULT_THIN    = 30   # minutes
 
 
 # ── Data loading ───────────────────────────────────────────────────────────────
