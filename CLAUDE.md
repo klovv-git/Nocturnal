@@ -94,13 +94,18 @@ windows from `D:\Github\Nocturnal`:
 .\venv\Scripts\python.exe weather_map2.py             # rebuilds every 20 min
 ```
 
-**If you restart services, check for duplicate processes first:**
+**Do NOT kill `C:\Users\...\WindowsApps\python.exe` processes.**
+The venv was built on the Windows Store Python (`pyvenv.cfg home` points to
+`WindowsApps\PythonSoftwareFoundation.Python.3.10_...`). On Windows, this uses
+an App Execution Alias: running `venv\Scripts\python.exe` spawns a stub that
+launches the real interpreter at the WindowsApps path as a child. Both show up
+in the process list — they are **one process**, not a duplicate. Killing the
+WindowsApps child kills the actual Python worker.
+
+To check service status, use Task Scheduler:
 ```powershell
-Get-CimInstance Win32_Process | Where-Object {$_.Name -like "*python*"} | 
-  Select-Object ProcessId, CommandLine
+Get-ScheduledTask -TaskPath "\Nocturnal\" | Select-Object TaskName, State
 ```
-Duplicates from `C:\Users\...\WindowsApps\python.exe` are stale C: copies — kill them.
-Only keep processes using `D:\Github\Nocturnal\venv\Scripts\python.exe`.
 
 ---
 
