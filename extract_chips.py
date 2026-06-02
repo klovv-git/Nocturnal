@@ -76,8 +76,8 @@ def main():
     ap.add_argument("--db",    default=str(DEFAULT_DB))
     ap.add_argument("--pol",   default="vv")
     ap.add_argument("--chip",  type=int, default=CHIP_SIZE)
-    ap.add_argument("--limit", type=int, default=20,
-                    help="max dark detections to extract")
+    ap.add_argument("--limit", type=int, default=500,
+                    help="max dark detections to extract (default: 500)")
     args = ap.parse_args()
 
     # derive date from scene name, e.g. S1D_IW_..._20260512T061448_... -> 20260512
@@ -92,6 +92,8 @@ def main():
         """SELECT id, pixel_x, pixel_y, lat, lon, confidence
            FROM detections
            WHERE scene_name = ? AND dark = 1
+             AND lat IS NOT NULL
+             AND (score IS NULL OR score >= 0.2)
            ORDER BY confidence DESC
            LIMIT ?""",
         (args.scene, args.limit)
@@ -113,10 +115,11 @@ def main():
                   else struct.unpack('<d', b)[0]
             px, py = _b2f(px), _b2f(py)
 
-        arr = extract_chip(args.safe, args.pol, px, py, args.chip)
-        label = f"id={det_id}  conf={conf:.2f}\n{lat:.4f}N {lon:.4f}E"
-        img = annotate(arr, f"DARK id={det_id} conf={conf:.2f}")
         fname = out_dir / f"dark_{det_id:04d}_{lat:.4f}N_{lon:.4f}E.png"
+        if fname.exists():
+            continue   # already generated, skip
+        arr = extract_chip(args.safe, args.pol, px, py, args.chip)
+        img = annotate(arr, f"DARK id={det_id} conf={conf:.2f}")
         img.save(fname)
         print(f"  {fname.name}  ({lat:.4f}N, {lon:.4f}E)  conf={conf:.2f}")
 
