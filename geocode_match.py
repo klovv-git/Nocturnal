@@ -66,6 +66,52 @@ except ImportError:
         return (AOI_LAT_MIN <= lat <= AOI_LAT_MAX) and (AOI_LON_MIN <= lon <= AOI_LON_MAX)
 
 
+# ── Detection quality scoring ─────────────────────────────────────────────────
+
+# Sentinel-1 IW GRD pixel spacing ≈ 10 m.
+# A large container ship (~350 m) spans ~35 px; anything much bigger is
+# almost certainly land clutter or port infrastructure.
+_MAX_SHIP_PX  = 35    # longest dim for "full credit"
+_ZERO_PX      = 85    # at this size or larger, size_factor = 0
+_COAST_BUF_KM = 1.5   # detections within this distance of land score 0
+
+
+def _near_coast(lat: float, lon: float, buffer_km: float = _COAST_BUF_KM) -> bool:
+    """
+    Return True if any of 8 sample points at buffer_km radius is on land.
+    Catches harbour walls, breakwaters, and other near-coast clutter that
+    global_land_mask misses at its native ~1 km resolution.
+    """
+    dlat = buffer_km / 111.0
+    cos_lat = max(math.cos(math.radians(lat)), 1e-6)
+    dlon = buffer_km / (111.0 * cos_lat)
+    for dlat_i, dlon_j in [(-dlat, 0), (dlat, 0), (0, -dlon), (0, dlon),
+                            (-dlat, -dlon), (-dlat, dlon), (dlat, -dlon), (dlat, dlon)]:
+        if not is_ocean(lat + dlat_i, lon + dlon_j):
+            return True
+    return False
+
+
+def detection_score(confidence: float, width_px: float, height_px: float,
+                    lat: float, lon: float) -> float:
+    """
+    Composite quality score for a dark vessel detection.  Range 0–1.
+
+    Three independent factors, multiplied together so any single
+    disqualifier drives the score to zero:
+
+      confidence   — raw YOLO detection confidence (0.2–1.0)
+      size_factor  — penalises oversized blobs that are almost certainly
+                     land/port infrastructure rather than ships
+      coast_factor — 0 if within _COAST_BUF_KM of any land, else 1
+    """
+    max_dim     = max(width_px, height_px)
+    size_factor = max(0.0, 1.0 - max(0.0, max_dim - _MAX_SHIP_PX)
+                                  / (_ZERO_PX - _MAX_SHIP_PX))
+    coast_factor = 0.0 if _near_coast(lat, lon) else 1.0
+    return round(confidence * size_factor * coast_factor, 3)
+
+
 def _gcp_val(v) -> float:
     """
     Safely convert a GCP attribute to a Python float.
@@ -271,7 +317,8 @@ def process_scene(scene_name: str,
         # Pull unresolved detections for this scene (lat IS NULL means
         # Phase 4 hasn't touched it yet; idempotent re-runs).
         dets = conn.execute(
-            """SELECT id, pixel_y, pixel_x, polarisation
+            """SELECT id, pixel_y, pixel_x, polarisation,
+                      width_px, height_px, confidence
                FROM detections
                WHERE scene_name = ? AND lat IS NULL""",
             (scene_name,)).fetchall()
@@ -294,25 +341,29 @@ def process_scene(scene_name: str,
         n_dark = n_match = 0
         n_land = 0
         try:
-            for det_id, py, px, _ in dets:
+            for det_id, py, px, _, w_px, h_px, conf in dets:
                 # pixel_x/pixel_y may have been stored as numpy float32
                 # bytes by an older run — coerce them to plain floats.
-                py = _gcp_val(py)
-                px = _gcp_val(px)
+                py   = _gcp_val(py)
+                px   = _gcp_val(px)
+                w_px = float(w_px or 0)
+                h_px = float(h_px or 0)
+                conf = float(conf or 0)
                 lon, lat = pixel_to_lonlat(transform, py, px)
                 # Skip detections that land on land — the model fires on
                 # bright urban/agricultural features which are never ships.
                 if not is_ocean(lat, lon):
                     n_land += 1
-                    updates.append((lat, lon, None, None, None, det_id))
+                    updates.append((lat, lon, None, None, None, 0.0, det_id))
                     continue
+                score = detection_score(conf, w_px, h_px, lat, lon)
                 m = _nearest_ping(conn, lat, lon, t_mid, dt_s, radius_m)
                 if m is None:
                     n_dark += 1
-                    updates.append((lat, lon, None, None, 1, det_id))
+                    updates.append((lat, lon, None, None, 1, score, det_id))
                 else:
                     n_match += 1
-                    updates.append((lat, lon, m.mmsi, m.dist_m, 0, det_id))
+                    updates.append((lat, lon, m.mmsi, m.dist_m, 0, score, det_id))
         finally:
             src.close()
 
@@ -324,7 +375,7 @@ def process_scene(scene_name: str,
         conn.executemany(
             """UPDATE detections
                   SET lat = ?, lon = ?,
-                      matched_mmsi = ?, match_dist_m = ?, dark = ?
+                      matched_mmsi = ?, match_dist_m = ?, dark = ?, score = ?
                 WHERE id = ?""",
             updates)
         conn.commit()

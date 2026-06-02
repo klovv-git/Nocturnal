@@ -214,13 +214,19 @@ def load_pass(conn, scene_names: list, hours: float, thin_min: int,
         t_mid_list.append(t_mid)
 
         dets = conn.execute(
-            """SELECT id, lat, lon, confidence, dark, matched_mmsi, match_dist_m
+            """SELECT id, lat, lon, confidence, dark, matched_mmsi, match_dist_m,
+                      score, width_px, height_px
                FROM detections
                WHERE scene_name = ? AND lat IS NOT NULL AND dark IS NOT NULL""",
             (scene_name,)
         ).fetchall()
 
-        dark    = [d for d in dets if d[4] == 1]
+        # dark=1: no AIS match. Filter by score >= 0.2 to remove land clutter
+        # and oversized false positives.  score IS NULL = pre-scoring legacy data,
+        # show it so nothing disappears silently.
+        SCORE_THRESHOLD = 0.2
+        dark    = [d for d in dets if d[4] == 1
+                   and (d[7] is None or d[7] >= SCORE_THRESHOLD)]
         matched = [d for d in dets if d[4] == 0]
         all_dark.extend(dark)
         all_matched.extend(matched)
@@ -306,10 +312,13 @@ def load_pass(conn, scene_names: list, hours: float, thin_min: int,
         "scene": f"{n_slices} slice(s)",
         "t_mid": t_mid_combined,
         "time":  fmt_utc(t_mid_combined),
-        "dark":  [{"id": d[0], "lat": d[1], "lon": d[2],
-                   "conf": round(d[3], 2)} for d in all_dark],
+        "dark":  [{"id":   d[0], "lat": d[1], "lon": d[2],
+                   "conf": round(d[3], 2),
+                   "score": round(d[7], 2) if d[7] is not None else None,
+                   "w_px": d[8], "h_px": d[9]} for d in all_dark],
         "matched": [{"id": d[0], "lat": d[1], "lon": d[2],
                      "conf": round(d[3], 2), "mmsi": d[5],
+                     "score": round(d[7], 2) if d[7] is not None else None,
                      "name": vessel_names.get(d[5])} for d in all_matched],
     }
 
@@ -678,9 +687,14 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
     radarGroup.clearLayers();
 
     det.dark.forEach(function(d) {
+      // Colour by quality score: red=low, orange=mid, green=high
+      var score   = (d.score !== null && d.score !== undefined) ? d.score : 0;
+      var hue     = Math.round(score * 120);   // 0=red  60=orange  120=green
+      var colour  = 'hsl(' + hue + ',90%,45%)';
+      var radius  = 6 + Math.round(score * 6); // larger dot = higher quality
       var m = L.circleMarker([d.lat, d.lon], {
-        radius: 8, color: '#e74c3c', fillColor: '#e74c3c',
-        fillOpacity: 0.9, weight: 2
+        radius: radius, color: colour, fillColor: colour,
+        fillOpacity: 0.85, weight: 2
       });
       var chipB64 = chips[d.id] || null;
       var chipHtml = '';
@@ -692,10 +706,20 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
           'style="width:256px;height:256px;margin-top:6px;image-rendering:pixelated;' +
           'border:1px solid #ccc;display:block"></div>';
       }
-      m.bindPopup('<b>DARK VESSEL CANDIDATE</b><br>ID: ' + d.id +
-        '<br>Confidence: ' + d.conf +
-        '<br>Satellite: ' + det.time +
-        '<br>No AIS signal within 1km / 30min' + chipHtml, {maxWidth: 700});
+      var sizeStr  = (d.w_px && d.h_px) ? (Math.round(d.w_px) + '\xd7' + Math.round(d.h_px) + ' px  (' + Math.round(d.w_px*10) + '\xd7' + Math.round(d.h_px*10) + ' m)') : '—';
+      var scoreStr = (d.score !== null && d.score !== undefined) ? d.score.toFixed(2) : 'unscored';
+      var pct      = Math.round(score * 100);
+      var scoreBar = '<div style="margin:4px 0 6px;height:6px;border-radius:3px;background:#333">' +
+        '<div style="width:' + pct + '%;height:100%;border-radius:3px;background:' + colour + '"></div></div>';
+      m.bindPopup(
+        '<b style="color:' + colour + '">DARK VESSEL CANDIDATE</b><br>' +
+        'ID: ' + d.id + '<br>' +
+        scoreBar +
+        'Quality score: <b>' + scoreStr + '</b>&ensp;(YOLO conf: ' + d.conf + ')<br>' +
+        'SAR footprint: ' + sizeStr + '<br>' +
+        'Pass: ' + det.time + '<br>' +
+        'No AIS signal within 1 km / 30 min' + chipHtml,
+        {maxWidth: 700});
       radarGroup.addLayer(m);
     });
 
