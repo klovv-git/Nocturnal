@@ -483,6 +483,8 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
           <span class="dot" style="background:#e74c3c"></span> Radar detections</label>
         <label><input type="checkbox" id="tog-sar" checked>
           <span class="dot" style="background:#888;border-radius:2px"></span> SAR image</label>
+        <label><input type="checkbox" id="tog-infra" checked>
+          <span class="dot" style="background:#00b4d8;border-radius:2px"></span> Infrastructure</label>
         <div class="opacity-row">
           Opacity <input type="range" id="sar-opacity" min="0" max="1" step="0.05" value="0.75"
             style="width:80px">
@@ -505,9 +507,10 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   // ════════════════════════════════════════════════════════════════════════════
   //  DATA — injected by Python
   // ════════════════════════════════════════════════════════════════════════════
-  var SCENES      = __SCENES_JSON__;
-  var SCENE_ORDER = __SCENE_ORDER_JSON__;
-  var AOI_GEOJSON = __AOI_GEOJSON__;
+  var SCENES       = __SCENES_JSON__;
+  var SCENE_ORDER  = __SCENE_ORDER_JSON__;
+  var AOI_GEOJSON  = __AOI_GEOJSON__;
+  var INFRA_GEOJSON = __INFRA_GEOJSON__;
 
   // ════════════════════════════════════════════════════════════════════════════
   //  Map init
@@ -521,6 +524,50 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   var aisGroup   = L.layerGroup().addTo(map);
   var radarGroup = L.layerGroup().addTo(map);
   var sarLayers  = [];   // one imageOverlay per SAR slice
+
+  // ── Infrastructure layer ───────────────────────────────────────────────────
+  var infraGroup = L.layerGroup().addTo(map);
+
+  var INFRA_STYLE = {
+    wind_farm: { color: '#00b4d8', weight: 1.5, fillColor: '#00b4d8', fillOpacity: 0.12, opacity: 0.7 },
+    cable:     { color: '#9b59b6', weight: 2,   dashArray: '6 4',     fillOpacity: 0,    opacity: 0.75 },
+    pipeline:  { color: '#e67e22', weight: 2.5, dashArray: '8 5',     fillOpacity: 0,    opacity: 0.8 },
+    platform:  { color: '#e67e22', weight: 2,   fillColor: '#e67e22', fillOpacity: 0.9 },
+    other:     { color: '#888',    weight: 1,   fillOpacity: 0.1 },
+  };
+
+  var INFRA_LABEL = {
+    wind_farm: 'Wind Farm',
+    cable:     'Submarine Cable',
+    pipeline:  'Pipeline',
+    platform:  'Offshore Platform',
+    other:     'Infrastructure',
+  };
+
+  if (INFRA_GEOJSON) {
+    L.geoJSON(INFRA_GEOJSON, {
+      style: function(feature) {
+        var cat = feature.properties.category || 'other';
+        return INFRA_STYLE[cat] || INFRA_STYLE.other;
+      },
+      pointToLayer: function(feature, latlng) {
+        var cat = feature.properties.category || 'other';
+        var st  = INFRA_STYLE[cat] || INFRA_STYLE.other;
+        return L.circleMarker(latlng, {
+          radius: 6, color: st.color, fillColor: st.fillColor || st.color,
+          fillOpacity: st.fillOpacity !== undefined ? st.fillOpacity : 0.8, weight: 1.5
+        });
+      },
+      onEachFeature: function(feature, layer) {
+        var p    = feature.properties;
+        var cat  = INFRA_LABEL[p.category] || p.category;
+        var name = p.name || cat;
+        var tip  = '<b>' + name + '</b><br><i>' + cat + '</i>';
+        if (p.operator) tip += '<br>Operator: ' + p.operator;
+        layer.bindTooltip(tip, {sticky: true, opacity: 0.9});
+      }
+    }).addTo(infraGroup);
+  }
 
   // ── AOI boundary ───────────────────────────────────────────────────────────
   if (AOI_GEOJSON) {
@@ -913,6 +960,10 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
     if (this.checked) map.addLayer(radarGroup);
     else map.removeLayer(radarGroup);
   });
+  document.getElementById('tog-infra').addEventListener('change', function() {
+    if (this.checked) map.addLayer(infraGroup);
+    else map.removeLayer(infraGroup);
+  });
 
   // ════════════════════════════════════════════════════════════════════════════
   //  Play / Pause
@@ -1068,10 +1119,31 @@ def main():
     _aoi_file = Path(__file__).parent / "aoi.geojson"
     aoi_json  = _aoi_file.read_text(encoding="utf-8") if _aoi_file.exists() else "null"
 
+    # load infrastructure GeoJSON — filter out individual turbine nodes (too many)
+    # keep only: wind farm polygons, cables, pipelines, platforms
+    _infra_file = Path(__file__).parent / "infrastructure.geojson"
+    if _infra_file.exists():
+        raw_infra = json.loads(_infra_file.read_text(encoding="utf-8"))
+        keep_feats = []
+        for f in raw_infra.get("features", []):
+            cat  = f["properties"].get("category", "")
+            geom = f.get("geometry", {}).get("type", "")
+            # skip individual turbine point nodes — too many, use farm polygons instead
+            if cat == "wind_farm" and geom == "Point":
+                continue
+            keep_feats.append(f)
+        infra_json = json.dumps({"type": "FeatureCollection", "features": keep_feats})
+        print(f"Infrastructure: {len(keep_feats)} features loaded "
+              f"({len(raw_infra['features']) - len(keep_feats)} turbine nodes suppressed)")
+    else:
+        infra_json = "null"
+        print("Infrastructure: infrastructure.geojson not found — run fetch_infrastructure.py")
+
     html = HTML_TEMPLATE \
         .replace("__SCENES_JSON__",      scenes_json) \
         .replace("__SCENE_ORDER_JSON__", order_json) \
-        .replace("__AOI_GEOJSON__",      aoi_json)
+        .replace("__AOI_GEOJSON__",      aoi_json) \
+        .replace("__INFRA_GEOJSON__",    infra_json)
 
     OUT_FILE.write_text(html, encoding="utf-8")
     size_kb = OUT_FILE.stat().st_size >> 10
