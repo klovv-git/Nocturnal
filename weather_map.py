@@ -25,6 +25,12 @@ import time as _time
 from datetime import datetime, timezone
 from pathlib import Path
 
+try:
+    import requests as _req
+    _HAS_REQUESTS = True
+except ImportError:
+    _HAS_REQUESTS = False
+
 import config as _cfg
 
 DEFAULT_DB  = Path(str(_cfg.WEATHER_DB_PATH))
@@ -36,6 +42,27 @@ DEFAULT_OUT = Path("weather_map.html")
 
 def _r(v, d=1):
     return round(float(v), d) if v is not None else None
+
+
+def fetch_grid_depths(pts: list) -> dict:
+    if not _HAS_REQUESTS or not pts:
+        return {}
+    locations = "|".join(f"{lat},{lon}" for lat, lon in pts)
+    url = f"https://api.opentopodata.org/v1/gebco2020?locations={locations}"
+    try:
+        r = _req.get(url, timeout=15, headers={"User-Agent": "NOCTURNAL/1.0"})
+        r.raise_for_status()
+        depths = {}
+        for item in r.json().get("results", []):
+            loc  = item.get("location", {})
+            elev = item.get("elevation")
+            la   = round(float(loc.get("lat", 0)), 4)
+            lo   = round(float(loc.get("lng", 0)), 4)
+            depths[(la, lo)] = round(-float(elev), 1) if elev is not None else None
+        return depths
+    except Exception as exc:
+        print(f"  [bathymetry] {exc}")
+        return {}
 
 
 def load_data(db_path: Path) -> dict:
@@ -119,6 +146,12 @@ def load_data(db_path: Path) -> dict:
         })
 
     conn.close()
+
+    print(f"  Fetching bathymetry for {len(grid)} grid points ...", end=" ", flush=True)
+    depths = fetch_grid_depths([(p["lat"], p["lon"]) for p in grid])
+    for p in grid:
+        p["depth"] = depths.get((p["lat"], p["lon"]))
+    print(f"{sum(1 for p in grid if p['depth'] is not None)}/{len(grid)} depths fetched")
 
     now_ts = int(datetime.now(timezone.utc).replace(
         minute=0, second=0, microsecond=0).timestamp())
@@ -770,11 +803,16 @@ function buildPopup(point, ts) {
     html += '<i style="color:#aaa">No data at this time</i>';
   }
 
-  // depth row — filled asynchronously after the popup opens
+  // depth row — embedded at build time from GEBCO 2020
+  var depthVal = (point.depth != null && point.depth > 0)
+    ? point.depth.toFixed(0) + ' m'
+    : (point.depth != null && point.depth <= 0)
+      ? '▲ ' + Math.abs(point.depth).toFixed(0) + ' m (land)'
+      : '—';
   html += '<div style="display:flex;justify-content:space-between;gap:14px;margin-top:4px;'
         + 'border-top:1px solid #e0e0e0;padding-top:4px">'
         + '<span style="color:#888">⚓ Depth</span>'
-        + '<span style="font-weight:500" id="depth-val">…</span></div>';
+        + '<span style="font-weight:500">' + depthVal + '</span></div>';
 
   return html + '</div>';
 }
@@ -802,22 +840,6 @@ map.on('click', function(e) {
   clickMarker.setPopupContent(buildPopup(pt, currentTs()));
   clickMarker.openPopup();
 
-  // Fetch bathymetry at the exact clicked position
-  var clat = e.latlng.lat.toFixed(5), clon = e.latlng.lng.toFixed(5);
-  fetch('http://localhost:5050/bathymetry?lat=' + clat + '&lon=' + clon)
-    .then(function(r) { return r.json(); })
-    .then(function(d) {
-      var el = document.getElementById('depth-val');
-      if (!el) return;
-      if (d.depth_m == null) { el.textContent = '—'; return; }
-      if (d.depth_m <= 0) {
-        el.textContent = '▲ ' + Math.abs(d.depth_m).toFixed(0) + ' m (land)';
-      } else {
-        el.textContent = d.depth_m.toFixed(0) + ' m';
-        el.title = 'Source: ' + d.source;
-      }
-    })
-    .catch(function() { var el = document.getElementById('depth-val'); if (el) el.textContent = '—'; });
 });
 
 // ════════════════════════════════════════════════════════════════════════

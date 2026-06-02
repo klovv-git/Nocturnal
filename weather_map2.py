@@ -25,6 +25,12 @@ import time as _time
 from datetime import datetime, timezone
 from pathlib import Path
 
+try:
+    import requests as _req
+    _HAS_REQUESTS = True
+except ImportError:
+    _HAS_REQUESTS = False
+
 import config as _cfg
 
 DEFAULT_DB  = Path(str(_cfg.WEATHER_DB_PATH))
@@ -34,6 +40,33 @@ DEFAULT_OUT = Path("weather_map2.html")
 
 def _r(v, d=1):
     return round(float(v), d) if v is not None else None
+
+
+def fetch_grid_depths(pts: list) -> dict:
+    """
+    Batch-fetch sea-floor depths for a list of (lat, lon) tuples.
+    Returns {(lat, lon): depth_m} using GEBCO 2020 via OpenTopoData.
+    depth_m is positive = metres below sea level; None on failure.
+    """
+    if not _HAS_REQUESTS or not pts:
+        return {}
+    locations = "|".join(f"{lat},{lon}" for lat, lon in pts)
+    url = f"https://api.opentopodata.org/v1/gebco2020?locations={locations}"
+    try:
+        r = _req.get(url, timeout=15, headers={"User-Agent": "NOCTURNAL/1.0"})
+        r.raise_for_status()
+        results = r.json().get("results", [])
+        depths = {}
+        for item in results:
+            loc  = item.get("location", {})
+            elev = item.get("elevation")
+            la   = round(float(loc.get("lat", 0)), 4)
+            lo   = round(float(loc.get("lng", 0)), 4)
+            depths[(la, lo)] = round(-float(elev), 1) if elev is not None else None
+        return depths
+    except Exception as exc:
+        print(f"  [bathymetry] fetch failed: {exc}")
+        return {}
 
 
 def load_data(db_path: Path) -> dict:
@@ -95,6 +128,15 @@ def load_data(db_path: Path) -> dict:
                      "wx": wx, "bio": bio, "tide": tide, "extr": extr})
 
     conn.close()
+
+    # Fetch bathymetry depths for all grid points in one batch request
+    print(f"  Fetching bathymetry for {len(grid)} grid points ...", end=" ", flush=True)
+    depths = fetch_grid_depths([(p["lat"], p["lon"]) for p in grid])
+    for p in grid:
+        p["depth"] = depths.get((p["lat"], p["lon"]))
+    n_ok = sum(1 for p in grid if p["depth"] is not None)
+    print(f"{n_ok}/{len(grid)} depths fetched")
+
     now_ts = int(datetime.now(timezone.utc).replace(
         minute=0, second=0, microsecond=0).timestamp())
     print(f"  {len(grid)} grid points  |  "
@@ -613,10 +655,15 @@ function buildPopup(point, ts) {
   } else {
     html+='<span style="color:#3a4a5a">No data at this time</span>';
   }
-  // depth row — populated async after popup opens
+  // depth row — embedded at build time from GEBCO 2020
+  const depthVal = (point.depth != null && point.depth > 0)
+    ? point.depth.toFixed(0)+' m'
+    : (point.depth != null && point.depth <= 0)
+      ? '▲ '+Math.abs(point.depth).toFixed(0)+' m (land)'
+      : '—';
   html+='<div style="display:flex;justify-content:space-between;gap:12px;margin-top:4px;border-top:1px solid #1e2a38;padding-top:4px">'
     +'<span class="px-lbl">Depth</span>'
-    +'<span class="px-val" id="depth-val">…</span></div>';
+    +'<span class="px-val">'+depthVal+'</span></div>';
   return html;
 }
 
@@ -642,22 +689,6 @@ map.on('click', e=>{
   clickMarker.setPopupContent(buildPopup(pt, currentTs()));
   clickMarker.openPopup();
 
-  // Fetch bathymetry at the EXACT clicked position (not nearest grid point)
-  const clat=e.latlng.lat.toFixed(5), clon=e.latlng.lng.toFixed(5);
-  fetch('http://localhost:5050/bathymetry?lat='+clat+'&lon='+clon)
-    .then(r=>r.json())
-    .then(d=>{
-      const el=document.getElementById('depth-val');
-      if(!el) return;
-      if(d.depth_m==null){ el.textContent='—'; return; }
-      if(d.depth_m<=0){
-        el.textContent='▲ '+Math.abs(d.depth_m).toFixed(0)+' m (land)';
-      } else {
-        el.textContent=d.depth_m.toFixed(0)+' m';
-        el.title='Source: '+d.source;
-      }
-    })
-    .catch(()=>{ const el=document.getElementById('depth-val'); if(el) el.textContent='—'; });
 });
 
 // ════════════════════════════════════════════════════════════════════════
