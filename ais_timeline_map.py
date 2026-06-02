@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 import sys, io
 sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
 sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding="utf-8", errors="replace")
@@ -687,14 +687,9 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
     radarGroup.clearLayers();
 
     det.dark.forEach(function(d) {
-      // Colour by quality score: red=low, orange=mid, green=high
-      var score   = (d.score !== null && d.score !== undefined) ? d.score : 0;
-      var hue     = Math.round(score * 120);   // 0=red  60=orange  120=green
-      var colour  = 'hsl(' + hue + ',90%,45%)';
-      var radius  = 6 + Math.round(score * 6); // larger dot = higher quality
       var m = L.circleMarker([d.lat, d.lon], {
-        radius: radius, color: colour, fillColor: colour,
-        fillOpacity: 0.85, weight: 2
+        radius: 8, color: '#e74c3c', fillColor: '#e74c3c',
+        fillOpacity: 0.9, weight: 2
       });
       var chipB64 = chips[d.id] || null;
       var chipHtml = '';
@@ -706,19 +701,24 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
           'style="width:256px;height:256px;margin-top:6px;image-rendering:pixelated;' +
           'border:1px solid #ccc;display:block"></div>';
       }
-      var sizeStr  = (d.w_px && d.h_px) ? (Math.round(d.w_px) + '\xd7' + Math.round(d.h_px) + ' px  (' + Math.round(d.w_px*10) + '\xd7' + Math.round(d.h_px*10) + ' m)') : '—';
-      var scoreStr = (d.score !== null && d.score !== undefined) ? d.score.toFixed(2) : 'unscored';
-      var pct      = Math.round(score * 100);
-      var scoreBar = '<div style="margin:4px 0 6px;height:6px;border-radius:3px;background:#333">' +
-        '<div style="width:' + pct + '%;height:100%;border-radius:3px;background:' + colour + '"></div></div>';
+      var score     = (d.score !== null && d.score !== undefined) ? d.score : null;
+      var scoreStr  = score !== null ? score.toFixed(2) : 'unscored';
+      var pct       = score !== null ? Math.round(score * 100) : 0;
+      var barColour = score >= 0.5 ? '#2ecc71' : score >= 0.3 ? '#f39c12' : '#e74c3c';
+      var scoreBar  = '<div style="margin:4px 0 6px;height:6px;border-radius:3px;background:#444">' +
+        '<div style="width:' + pct + '%;height:100%;border-radius:3px;background:' + barColour + '"></div></div>';
+      var sizeStr   = (d.w_px && d.h_px)
+        ? Math.round(d.w_px) + '\xd7' + Math.round(d.h_px) + ' px'
+          + ' (' + Math.round(d.w_px * 10) + '\xd7' + Math.round(d.h_px * 10) + ' m)'
+        : '—';
       m.bindPopup(
-        '<b style="color:' + colour + '">DARK VESSEL CANDIDATE</b><br>' +
+        '<b>DARK VESSEL CANDIDATE</b><br>' +
         'ID: ' + d.id + '<br>' +
         scoreBar +
-        'Quality score: <b>' + scoreStr + '</b>&ensp;(YOLO conf: ' + d.conf + ')<br>' +
+        'Quality score: <b>' + scoreStr + '</b> &nbsp;(YOLO conf: ' + d.conf + ')<br>' +
         'SAR footprint: ' + sizeStr + '<br>' +
         'Pass: ' + det.time + '<br>' +
-        'No AIS signal within 1 km / 30 min' + chipHtml,
+        'No AIS signal within 1 km / 30 min' + chipHtml,
         {maxWidth: 700});
       radarGroup.addLayer(m);
     });
