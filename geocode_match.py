@@ -97,14 +97,20 @@ def detection_score(confidence: float, width_px: float, height_px: float,
     """
     Composite quality score for a dark vessel detection.  Range 0–1.
 
-    Three independent factors, multiplied together so any single
+    Four independent factors, multiplied together so any single
     disqualifier drives the score to zero:
 
+      aoi_factor   — 0 if outside the AOI bounding box (catches North Sea
+                     detections from scene footprints that extend beyond the
+                     Channel, where we have no AIS coverage)
       confidence   — raw YOLO detection confidence (0.2–1.0)
       size_factor  — penalises oversized blobs that are almost certainly
                      land/port infrastructure rather than ships
       coast_factor — 0 if within _COAST_BUF_KM of any land, else 1
     """
+    from config import AOI_LAT_MIN, AOI_LAT_MAX, AOI_LON_MIN, AOI_LON_MAX
+    if not (AOI_LAT_MIN <= lat <= AOI_LAT_MAX and AOI_LON_MIN <= lon <= AOI_LON_MAX):
+        return 0.0
     max_dim     = max(width_px, height_px)
     size_factor = max(0.0, 1.0 - max(0.0, max_dim - _MAX_SHIP_PX)
                                   / (_ZERO_PX - _MAX_SHIP_PX))
