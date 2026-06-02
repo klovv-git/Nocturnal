@@ -31,6 +31,8 @@ try:
 except ImportError:
     raise SystemExit("pip install flask")
 
+import requests
+
 from config import AOI_WKT, SENTINEL_DATA_DIR
 from download_scene import _attr, download_product, get_token, search_scenes
 
@@ -41,6 +43,32 @@ try:
     _JUR_AVAILABLE = True
 except Exception:
     _JUR_AVAILABLE = False
+
+# ── Bathymetry (GEBCO via OpenTopoData — in-memory cache) ─────────────────────
+_bathy_cache: dict = {}   # (rounded_lat, rounded_lon) → depth_m
+
+def _fetch_depth(lat, lon):
+    """
+    Return sea-floor depth in metres (positive = below sea level) at (lat, lon).
+    Queries OpenTopoData GEBCO 2020 and caches results rounded to 2 dp (~1 km grid).
+    Returns None on failure.
+    """
+    key = (round(lat, 2), round(lon, 2))
+    if key in _bathy_cache:
+        return _bathy_cache[key]
+    try:
+        url = "https://api.opentopodata.org/v1/gebco2020?locations={},{}".format(lat, lon)
+        r = requests.get(url, timeout=8, headers={"User-Agent": "NOCTURNAL/1.0"})
+        r.raise_for_status()
+        data = r.json()
+        elev = data["results"][0]["elevation"]   # negative = below sea level
+        depth = -float(elev) if elev is not None else None
+        if depth is not None:
+            _bathy_cache[key] = depth
+        return depth
+    except Exception as exc:
+        print("[bathymetry] fetch failed: {}".format(exc), flush=True)
+        return None
 
 app = Flask(__name__)
 
@@ -581,6 +609,31 @@ def _pipeline_thread(scenes: list, username: str, password: str):
         _log(f"ERROR: {exc}")
     finally:
         _running = False
+
+
+# ── Bathymetry endpoint ───────────────────────────────────────────────────────
+
+@app.route("/bathymetry")
+def bathymetry():
+    """
+    GET /bathymetry?lat=<float>&lon=<float>
+    Returns JSON: {"depth_m": <float|null>, "source": "GEBCO 2022 via OpenTopoData"}
+    depth_m is positive for depth below sea level (negative elevation).
+    """
+    try:
+        lat = float(request.args["lat"])
+        lon = float(request.args["lon"])
+    except (KeyError, ValueError):
+        return jsonify({"error": "lat and lon query params required"}), 400
+
+    depth = _fetch_depth(lat, lon)
+    return jsonify({
+        "lat":      lat,
+        "lon":      lon,
+        "depth_m":  round(depth, 1) if depth is not None else None,
+        "source":   "GEBCO 2020 via OpenTopoData",
+        "note":     "Positive = metres below sea level. Land values shown as negative.",
+    })
 
 
 # ── Jurisdiction endpoint ─────────────────────────────────────────────────────

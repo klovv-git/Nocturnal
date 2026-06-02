@@ -613,6 +613,10 @@ function buildPopup(point, ts) {
   } else {
     html+='<span style="color:#3a4a5a">No data at this time</span>';
   }
+  // depth row — populated async after popup opens
+  html+='<div style="display:flex;justify-content:space-between;gap:12px;margin-top:4px;border-top:1px solid #1e2a38;padding-top:4px">'
+    +'<span class="px-lbl">Depth</span>'
+    +'<span class="px-val" id="depth-val">…</span></div>';
   return html;
 }
 
@@ -637,6 +641,23 @@ map.on('click', e=>{
   showPoint(pt, e.latlng.lat, e.latlng.lng);
   clickMarker.setPopupContent(buildPopup(pt, currentTs()));
   clickMarker.openPopup();
+
+  // Fetch bathymetry at the EXACT clicked position (not nearest grid point)
+  const clat=e.latlng.lat.toFixed(5), clon=e.latlng.lng.toFixed(5);
+  fetch('http://localhost:5050/bathymetry?lat='+clat+'&lon='+clon)
+    .then(r=>r.json())
+    .then(d=>{
+      const el=document.getElementById('depth-val');
+      if(!el) return;
+      if(d.depth_m==null){ el.textContent='—'; return; }
+      if(d.depth_m<=0){
+        el.textContent='▲ '+Math.abs(d.depth_m).toFixed(0)+' m (land)';
+      } else {
+        el.textContent=d.depth_m.toFixed(0)+' m';
+        el.title='Source: '+d.source;
+      }
+    })
+    .catch(()=>{ const el=document.getElementById('depth-val'); if(el) el.textContent='—'; });
 });
 
 // ════════════════════════════════════════════════════════════════════════
