@@ -34,6 +34,14 @@ except ImportError:
 from config import AOI_WKT, SENTINEL_DATA_DIR
 from download_scene import _attr, download_product, get_token, search_scenes
 
+# ── Jurisdiction lookup (optional — graceful if data not fetched yet) ──────────
+try:
+    import jurisdiction_lookup as _jur
+    _jur.preload()   # warm up shapely cache at startup
+    _JUR_AVAILABLE = True
+except Exception:
+    _JUR_AVAILABLE = False
+
 app = Flask(__name__)
 
 # ── Global pipeline state ──────────────────────────────────────────────────────
@@ -573,6 +581,28 @@ def _pipeline_thread(scenes: list, username: str, password: str):
         _log(f"ERROR: {exc}")
     finally:
         _running = False
+
+
+# ── Jurisdiction endpoint ─────────────────────────────────────────────────────
+
+@app.route("/jurisdiction")
+def jurisdiction():
+    """
+    GET /jurisdiction?lat=<float>&lon=<float>
+    Returns JSON describing the maritime legal zone at that position.
+    """
+    if not _JUR_AVAILABLE:
+        return jsonify({
+            "error": "Jurisdiction data not available. Run: python fetch_jurisdiction.py"
+        }), 503
+    try:
+        lat = float(request.args["lat"])
+        lon = float(request.args["lon"])
+    except (KeyError, ValueError):
+        return jsonify({"error": "lat and lon query params required"}), 400
+
+    info = _jur.get_jurisdiction(lat, lon)
+    return jsonify(info)
 
 
 # ── Entry point ────────────────────────────────────────────────────────────────

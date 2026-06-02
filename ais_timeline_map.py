@@ -485,6 +485,8 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
           <span class="dot" style="background:#888;border-radius:2px"></span> SAR image</label>
         <label><input type="checkbox" id="tog-infra" checked>
           <span class="dot" style="background:#00b4d8;border-radius:2px"></span> Infrastructure</label>
+        <label><input type="checkbox" id="tog-jur" checked>
+          <span class="dot" style="background:#e74c3c44;border:1.5px solid #e74c3c;border-radius:2px"></span> Jurisdiction</label>
         <div class="opacity-row">
           Opacity <input type="range" id="sar-opacity" min="0" max="1" step="0.05" value="0.75"
             style="width:80px">
@@ -510,7 +512,10 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   var SCENES       = __SCENES_JSON__;
   var SCENE_ORDER  = __SCENE_ORDER_JSON__;
   var AOI_GEOJSON  = __AOI_GEOJSON__;
-  var INFRA_GEOJSON = __INFRA_GEOJSON__;
+  var INFRA_GEOJSON  = __INFRA_GEOJSON__;
+  var JUR_TS_GEOJSON = __JUR_TS__;
+  var JUR_CZ_GEOJSON = __JUR_CZ__;
+  var JUR_EZ_GEOJSON = __JUR_EZ__;
 
   // ════════════════════════════════════════════════════════════════════════════
   //  Map init
@@ -568,6 +573,75 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
       }
     }).addTo(infraGroup);
   }
+
+  // ── Maritime jurisdiction layer ────────────────────────────────────────────
+  var jurGroup = L.layerGroup().addTo(map);
+
+  var JUR_LAYERS = [
+    // Render EEZ first (bottom), then contiguous, then territorial sea (top)
+    { gj: JUR_EZ_GEOJSON, colour: '#f1c40f', opacity: 0.08, label: 'EEZ (200 nm)' },
+    { gj: JUR_CZ_GEOJSON, colour: '#e67e22', opacity: 0.13, label: 'Contiguous Zone (24 nm)' },
+    { gj: JUR_TS_GEOJSON, colour: '#e74c3c', opacity: 0.18, label: 'Territorial Sea (12 nm)' },
+  ];
+
+  JUR_LAYERS.forEach(function(lyr) {
+    if (!lyr.gj) return;
+    L.geoJSON(lyr.gj, {
+      style: function() {
+        return {
+          color:       lyr.colour,
+          weight:      1,
+          opacity:     0.5,
+          fillColor:   lyr.colour,
+          fillOpacity: lyr.opacity,
+        };
+      },
+      onEachFeature: function(feature, layer) {
+        var p = feature.properties;
+        layer.bindTooltip(
+          '<b>' + (p.sovereign || '?') + '</b><br>' + (p.zone_label || lyr.label),
+          {sticky: true, opacity: 0.9}
+        );
+      }
+    }).addTo(jurGroup);
+  });
+
+  // ── Map click → jurisdiction popup (calls server endpoint) ─────────────────
+  var _jurPopup = L.popup({maxWidth: 380});
+
+  map.on('click', function(e) {
+    var lat = e.latlng.lat.toFixed(5);
+    var lon = e.latlng.lng.toFixed(5);
+    fetch('http://localhost:5050/jurisdiction?lat=' + lat + '&lon=' + lon)
+      .then(function(r) { return r.json(); })
+      .then(function(d) {
+        if (d.error) {
+          _jurPopup.setLatLng(e.latlng)
+            .setContent('<b>Jurisdiction unavailable</b><br>' + d.error)
+            .openOn(map);
+          return;
+        }
+        var bg = d.colour || '#888';
+        var html =
+          '<div style="border-left:4px solid ' + bg + ';padding-left:8px">' +
+          '<b style="font-size:1.05em">' + (d.sovereign || 'Unknown') + '</b>' +
+          '<span style="float:right;font-size:0.8em;color:#888">' + lat + 'N ' + lon + 'E</span><br>' +
+          '<span style="color:' + bg + ';font-weight:600">' + (d.zone_label || '') + '</span><br><br>' +
+          '<b>Legal regime</b><br>' +
+          '<span style="font-size:0.88em">' + (d.zone_legal || '') + '</span><br><br>' +
+          '<b>Responsible authority</b><br>' +
+          '<span style="font-size:0.9em">' + (d.authority || '') + '</span><br>' +
+          '<span style="font-size:0.82em;color:#aaa">' + (d.auth_detail || '') + '</span><br>' +
+          '<span style="font-size:0.88em;font-family:monospace">' + (d.contact || '') + '</span>' +
+          '</div>';
+        _jurPopup.setLatLng(e.latlng).setContent(html).openOn(map);
+      })
+      .catch(function() {
+        _jurPopup.setLatLng(e.latlng)
+          .setContent('<b>Jurisdiction lookup failed</b><br>Is nocturnal_server.py running?')
+          .openOn(map);
+      });
+  });
 
   // ── AOI boundary ───────────────────────────────────────────────────────────
   if (AOI_GEOJSON) {
@@ -964,6 +1038,10 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
     if (this.checked) map.addLayer(infraGroup);
     else map.removeLayer(infraGroup);
   });
+  document.getElementById('tog-jur').addEventListener('change', function() {
+    if (this.checked) map.addLayer(jurGroup);
+    else map.removeLayer(jurGroup);
+  });
 
   // ════════════════════════════════════════════════════════════════════════════
   //  Play / Pause
@@ -1139,11 +1217,29 @@ def main():
         infra_json = "null"
         print("Infrastructure: infrastructure.geojson not found — run fetch_infrastructure.py")
 
+    # load jurisdiction display GeoJSON files (clipped + simplified)
+    _jur_dir = Path(__file__).parent / "jurisdiction_data"
+    def _load_jur(fname):
+        p = _jur_dir / fname
+        return p.read_text(encoding="utf-8") if p.exists() else "null"
+
+    jur_ts = _load_jur("territorial_sea_display.geojson")
+    jur_cz = _load_jur("contiguous_zone_display.geojson")
+    jur_ez = _load_jur("eez_display.geojson")
+    if jur_ts == "null":
+        print("Jurisdiction: jurisdiction_data/ not found — run fetch_jurisdiction.py")
+    else:
+        print(f"Jurisdiction: loaded display layers "
+              f"({len(jur_ts)>>10} / {len(jur_cz)>>10} / {len(jur_ez)>>10} KB)")
+
     html = HTML_TEMPLATE \
         .replace("__SCENES_JSON__",      scenes_json) \
         .replace("__SCENE_ORDER_JSON__", order_json) \
         .replace("__AOI_GEOJSON__",      aoi_json) \
-        .replace("__INFRA_GEOJSON__",    infra_json)
+        .replace("__INFRA_GEOJSON__",    infra_json) \
+        .replace("__JUR_TS__",           jur_ts) \
+        .replace("__JUR_CZ__",           jur_cz) \
+        .replace("__JUR_EZ__",           jur_ez)
 
     OUT_FILE.write_text(html, encoding="utf-8")
     size_kb = OUT_FILE.stat().st_size >> 10

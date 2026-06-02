@@ -1,0 +1,20 @@
+{
+  "bbox": "-5.809316,47.814533,3.94453,51.781217",
+  "zones": {
+    "territorial_sea": "Territorial Sea (0\u201312 nm)",
+    "contiguous_zone": "Contiguous Zone (12\u201324 nm)",
+    "eez": "Exclusive Economic Zone (24\u2013200 nm)",
+    "high_seas": "High Seas"
+  },
+  "legal": {
+    "territorial_sea": "Full sovereignty. Foreign vessels have right of innocent passage. Coastal state may board and inspect any vessel.",
+    "contiguous_zone": "Coastal state may enforce customs, fiscal, immigration and sanitary laws. No general right of hot pursuit begins here. Limited boarding authority.",
+    "eez": "Coastal state has sovereign rights over resources and installations. Flag state jurisdiction applies to navigation. Boarding requires flag state consent except under UNCLOS exceptions.",
+    "high_seas": "No national jurisdiction. Flag state has exclusive jurisdiction. Boarding only permitted under IMO/UNCLOS exceptions (piracy, slave trade, stateless vessel, hot pursuit)."
+  },
+  "colours": {
+    "territorial_sea": "#e74c3c",
+    "contiguous_zone": "#e67e22",
+    "eez": "#f1c40f"
+  }
+}
