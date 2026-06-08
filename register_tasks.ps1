@@ -60,12 +60,16 @@ foreach ($svc in $services) {
     $trigger = New-ScheduledTaskTrigger -AtLogOn -User $user
 
     # Settings: restart up to 3 times on failure (1 min gap), run indefinitely
+    # DisallowStartIfOnBatteries:$false + StopIfGoingOnBatteries:$false ensures
+    # tasks keep running if the laptop is unplugged (default Windows behaviour
+    # is to stop all tasks on battery, which caused silent service outages).
     $settings = New-ScheduledTaskSettingsSet `
         -RestartCount 3 `
         -RestartInterval (New-TimeSpan -Minutes 1) `
         -ExecutionTimeLimit ([TimeSpan]::Zero) `
         -MultipleInstances IgnoreNew `
-        -StartWhenAvailable
+        -StartWhenAvailable `
+        -DisallowStartIfOnBatteries:$false
 
     # Principal: run as current user, only when logged in
     $principal = New-ScheduledTaskPrincipal `
